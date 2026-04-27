@@ -1,7 +1,7 @@
 {
   "name": "cerberus-desktop",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "type": "module",
   "description": "Cerberus AI — local-first chat dashboard for uncensored language models",
   "scripts": {

@@ -24,6 +24,13 @@ fn http() -> Result<reqwest::Client, reqwest::Error> {
         .build()
 }
 
+fn http_short() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
+        .build()
+}
+
 // ─── Cloud: API-key verification only ──────────────────────────────────────
 
 /// Verify the API key against api.cerberusai.dev.
@@ -69,7 +76,7 @@ fn parse_semver(s: &str) -> Vec<u64> {
 }
 
 pub async fn check_update(current: &str) -> Result<UpdateInfo, anyhow::Error> {
-    let c = http()?;
+    let c = http_short()?;
     let r = c
         .get(RELEASES_LATEST_URL)
         .header("User-Agent", "CerberusDesktop")
