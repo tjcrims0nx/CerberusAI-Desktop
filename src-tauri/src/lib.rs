@@ -46,6 +46,21 @@ async fn check_api(api_key: String) -> Result<String, String> {
     ollama::verify_key(&api_key).await.map_err(|e| e.to_string())
 }
 
+/// Fetch the server-side allowlist of models from llm.cerberusai.dev.
+/// Returned ids are qualified for `ollama pull`.
+#[tauri::command]
+async fn list_allowed_models(api_key: String) -> Result<Vec<String>, String> {
+    ollama::list_allowed(&api_key).await.map_err(|e| e.to_string())
+}
+
+/// Compare the bundled app version against the latest GitHub release.
+#[tauri::command]
+async fn check_for_update() -> Result<ollama::UpdateInfo, String> {
+    ollama::check_update(env!("CARGO_PKG_VERSION"))
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ─── Local Ollama ─────────────────────────────────────────────────────────
 
 /// Returns local Ollama daemon status (running + version, or error).
@@ -108,16 +123,26 @@ fn detect_hardware() -> HardwareInfo {
 }
 
 #[tauri::command]
-async fn update_app() -> Result<(), String> {
-    // This runs the one-liner that detects hardware and installs the latest Cerberus.
-    // It's the same command used for the initial installation.
+async fn update_app(force: Option<bool>) -> Result<(), String> {
+    // Re-check before spawning: if the GitHub `latest` release isn't actually newer
+    // than the bundled version, refuse — otherwise the bootstrapper would happily
+    // reinstall an older artifact and downgrade the user.
+    if !force.unwrap_or(false) {
+        let info = ollama::check_update(env!("CARGO_PKG_VERSION"))
+            .await
+            .map_err(|e| e.to_string())?;
+        if !info.available {
+            return Err(format!(
+                "no update available (installed v{}, latest v{})",
+                info.current, info.latest
+            ));
+        }
+    }
     std::process::Command::new("powershell")
         .arg("-Command")
         .arg("irm https://cerberusai.dev/get | iex")
         .spawn()
         .map_err(|e| e.to_string())?;
-    
-    // The installer script usually kills the existing process to overwrite the binary.
     Ok(())
 }
 
@@ -127,6 +152,8 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             check_api,
+            list_allowed_models,
+            check_for_update,
             check_local_ollama,
             list_models,
             pull_model,

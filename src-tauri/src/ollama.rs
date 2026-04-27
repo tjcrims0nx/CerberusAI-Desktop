@@ -14,7 +14,26 @@ use std::time::Duration;
 use tauri::ipc::Channel;
 
 const CLOUD_API_BASE: &str = "https://api.cerberusai.dev";
+const LLM_API_BASE: &str = "https://llm.cerberusai.dev";
+pub const REGISTRY_HOST: &str = "registry.cerberusai.dev";
+const REGISTRY_DEFAULT_NAMESPACE: &str = "library";
 const OLLAMA_BASE: &str = "http://127.0.0.1:11434";
+
+/// Turn a model id from `/v1/models` into the fully-qualified name that
+/// `ollama pull` expects. If the id already contains `/` it's assumed to be
+/// pre-qualified and is returned as-is (with `:latest` appended if no tag).
+pub fn qualify_model_id(id: &str) -> String {
+    let with_tag = if id.contains(':') {
+        id.to_string()
+    } else {
+        format!("{id}:latest")
+    };
+    if with_tag.contains('/') {
+        with_tag
+    } else {
+        format!("{REGISTRY_HOST}/{REGISTRY_DEFAULT_NAMESPACE}/{with_tag}")
+    }
+}
 
 fn http() -> Result<reqwest::Client, reqwest::Error> {
     reqwest::Client::builder()
@@ -41,6 +60,84 @@ pub async fn verify_key(api_key: &str) -> Result<String, anyhow::Error> {
     } else {
         Err(anyhow::anyhow!("API returned status {}", r.status()))
     }
+}
+
+// ─── Cloud: GitHub release-based update check ──────────────────────────────
+
+const RELEASES_LATEST_URL: &str =
+    "https://api.github.com/repos/tjcrims0nx/CerberusAI-Desktop/releases/latest";
+
+#[derive(Debug, Deserialize)]
+struct GitHubReleaseResp {
+    tag_name: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct UpdateInfo {
+    pub current: String,
+    pub latest: String,
+    pub available: bool,
+}
+
+fn parse_semver(s: &str) -> Vec<u64> {
+    s.trim().trim_start_matches('v')
+        .split(|c: char| c == '.' || c == '-' || c == '+')
+        .filter_map(|p| p.parse::<u64>().ok())
+        .collect()
+}
+
+pub async fn check_update(current: &str) -> Result<UpdateInfo, anyhow::Error> {
+    let c = http()?;
+    let r = c
+        .get(RELEASES_LATEST_URL)
+        .header("User-Agent", "CerberusDesktop")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?;
+    if !r.status().is_success() {
+        return Err(anyhow::anyhow!("GitHub API returned {}", r.status()));
+    }
+    let body = r.json::<GitHubReleaseResp>().await?;
+    let latest = body.tag_name.trim_start_matches('v').to_string();
+    let available = parse_semver(&latest) > parse_semver(current);
+    Ok(UpdateInfo {
+        current: current.to_string(),
+        latest,
+        available,
+    })
+}
+
+// ─── Cloud: server-side model allowlist ────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct OpenAiModelEntry {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiModelsResp {
+    #[serde(default)]
+    data: Vec<OpenAiModelEntry>,
+}
+
+/// Fetch the OpenAI-style model list from llm.cerberusai.dev and return each
+/// model id qualified for `ollama pull`.
+pub async fn list_allowed(api_key: &str) -> Result<Vec<String>, anyhow::Error> {
+    let c = http()?;
+    let r = c
+        .get(format!("{LLM_API_BASE}/v1/models"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await?;
+    if !r.status().is_success() {
+        let status = r.status();
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(anyhow::anyhow!("invalid API key (HTTP {status})"));
+        }
+        return Err(anyhow::anyhow!("llm API returned status {status}"));
+    }
+    let body = r.json::<OpenAiModelsResp>().await?;
+    Ok(body.data.into_iter().map(|m| qualify_model_id(&m.id)).collect())
 }
 
 // ─── Local Ollama: status + model management ──────────────────────────────
@@ -304,4 +401,39 @@ pub async fn stream_chat_local(
         delta: String::new(), done: true, error: None,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::qualify_model_id;
+
+    #[test]
+    fn short_id_gets_registry_namespace_and_latest() {
+        assert_eq!(
+            qualify_model_id("cerberus-4b-v2-abliterated"),
+            "registry.cerberusai.dev/library/cerberus-4b-v2-abliterated:latest"
+        );
+    }
+
+    #[test]
+    fn short_id_with_tag_keeps_tag() {
+        assert_eq!(
+            qualify_model_id("cerberus-4b:q4"),
+            "registry.cerberusai.dev/library/cerberus-4b:q4"
+        );
+    }
+
+    #[test]
+    fn fully_qualified_id_passes_through() {
+        let id = "registry.cerberusai.dev/cerberusai/cerberus-4b:latest";
+        assert_eq!(qualify_model_id(id), id);
+    }
+
+    #[test]
+    fn qualified_without_tag_gets_latest() {
+        assert_eq!(
+            qualify_model_id("registry.cerberusai.dev/cerberusai/cerberus-4b"),
+            "registry.cerberusai.dev/cerberusai/cerberus-4b:latest"
+        );
+    }
 }

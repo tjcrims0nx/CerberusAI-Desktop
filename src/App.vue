@@ -18,6 +18,7 @@ const APIKEY_KEY = "cerberus.apiKey.v1";
 const chats = ref<Chat[]>([]);
 const activeId = ref<string | null>(null);
 const models = ref<OllamaModel[]>([]);
+const allowedModels = ref<string[]>([]);
 const selectedModel = ref<string>(localStorage.getItem(MODEL_KEY) || "");
 const cloudStatus = ref<OllamaStatus>({ kind: "checking" });
 const localStatus = ref<{ running: boolean; version?: string; error?: string }>({ running: false });
@@ -25,6 +26,7 @@ const hardware = ref<HardwareInfo | null>(null);
 const draft = ref<string>("");
 const streaming = ref<boolean>(false);
 const updating = ref<boolean>(false);
+const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
 const messagesEl = ref<HTMLElement | null>(null);
 
 // API key gate
@@ -34,14 +36,19 @@ const apiKeyDraft = ref<string>("");
 const verifying = ref<boolean>(false);
 const verifyError = ref<string>("");
 
-// Suggested Cerberus models that the user can pull on demand
-const SUGGESTED_MODELS = [
-  { tag: "cerberus-4b-v2-abliterated", size: "~2.6 GB", note: "Q4_K_M · runs on most hardware" },
-  { tag: "Arbiter-GL9b", size: "~6.2 GB", note: "Q4_K_M · high-performance reasoning" },
-];
-
 // Active model pull
 const pulling = ref<{ name: string; pct: number; status: string } | null>(null);
+
+// Every allowlisted model, paired with whether it's already pulled locally.
+// Drives the dropdown so users can pick undownloaded models and have them
+// auto-pulled (LM Studio-style).
+const allModelChoices = computed(() => {
+  const local = new Set(models.value.map((m) => m.name));
+  return allowedModels.value.map((name) => ({ name, downloaded: local.has(name) }));
+});
+const pullableModels = computed(() =>
+  allModelChoices.value.filter((c) => !c.downloaded).map((c) => c.name)
+);
 
 const activeChat = computed<Chat | null>(() =>
   chats.value.find((c) => c.id === activeId.value) ?? null
@@ -103,27 +110,55 @@ function deleteChat(id: string, evt: Event) {
 }
 
 watch(selectedModel, (v) => {
-  if (v) localStorage.setItem(MODEL_KEY, v);
+  // Only persist once the model is actually present locally — otherwise a
+  // pending-download choice would be remembered before it ever arrived.
+  if (v && models.value.some((m) => m.name === v)) {
+    localStorage.setItem(MODEL_KEY, v);
+  }
 });
+
+// LM Studio-style: picking an undownloaded model auto-triggers the pull.
+watch(selectedModel, async (v) => {
+  if (!v) return;
+  if (models.value.some((m) => m.name === v)) return;
+  if (!allowedModels.value.includes(v)) return;
+  if (pulling.value) return;
+  await pullModel(v);
+});
+
+async function refreshAllowedModels() {
+  if (!apiKey.value) {
+    allowedModels.value = [];
+    return;
+  }
+  try {
+    allowedModels.value = await invoke<string[]>("list_allowed_models", {
+      apiKey: apiKey.value,
+    });
+  } catch (e) {
+    console.warn("list_allowed_models failed", e);
+    allowedModels.value = [];
+  }
+}
 
 async function refreshModels() {
   try {
     const list = await invoke<OllamaModel[]>("list_models");
-    // Only allow Cerberus and Arbiter models
-    const filtered = list.filter(m => 
-      m.name.toLowerCase().includes("cerberus") || 
-      m.name.toLowerCase().includes("arbiter")
-    );
+    const allowed = new Set(allowedModels.value);
+    const filtered = allowed.size > 0
+      ? list.filter((m) => allowed.has(m.name))
+      : [];
     models.value = filtered;
 
-    // If current selected model is not in the filtered list, reset it
-    if (selectedModel.value && !filtered.find(m => m.name === selectedModel.value)) {
+    if (
+      selectedModel.value &&
+      !filtered.find((m) => m.name === selectedModel.value) &&
+      !allowedModels.value.includes(selectedModel.value)
+    ) {
       selectedModel.value = "";
     }
-
     if (!selectedModel.value && filtered.length) {
-      const cerberus = filtered.find((m) => m.name.toLowerCase().includes("cerberus"));
-      selectedModel.value = cerberus?.name ?? filtered[0]?.name ?? "";
+      selectedModel.value = filtered[0].name;
     }
   } catch (e) {
     console.warn("list_models failed", e);
@@ -154,6 +189,17 @@ async function checkApi() {
     cloudStatus.value = msg.includes("401") || msg.includes("403")
       ? { kind: "error", message: "Invalid API key" }
       : { kind: "error", message: msg };
+  }
+}
+
+async function checkForUpdate() {
+  try {
+    updateInfo.value = await invoke<{ current: string; latest: string; available: boolean }>(
+      "check_for_update"
+    );
+  } catch (e) {
+    console.warn("check_for_update failed", e);
+    updateInfo.value = null;
   }
 }
 
@@ -203,8 +249,9 @@ async function submitKey() {
     apiKeyVerified.value = true;
     localStorage.setItem(APIKEY_KEY, key);
     apiKeyDraft.value = "";
-    // Now that we have a key, connect to the API
     await checkApi();
+    await refreshAllowedModels();
+    if (localStatus.value.running) await refreshModels();
   }
 }
 
@@ -225,6 +272,8 @@ async function send() {
   const text = draft.value.trim();
   if (!text || streaming.value || !activeChat.value || !selectedModel.value) return;
   if (!apiKeyVerified.value || !apiKey.value) return;
+  if (pulling.value) return;
+  if (!models.value.some((m) => m.name === selectedModel.value)) return;
   if (!localStatus.value.running) {
     await checkLocal();
     if (!localStatus.value.running) return;
@@ -330,6 +379,7 @@ const SUGGESTIONS = [
 
 async function handleUpdate() {
   if (updating.value) return;
+  if (!updateInfo.value?.available) return;
   updating.value = true;
   try {
     await invoke("update_app");
@@ -356,9 +406,11 @@ onMounted(async () => {
   }
   await Promise.all([
     detectHardware(),
+    checkForUpdate(),
     apiKey.value ? checkApi() : Promise.resolve(),
-    checkLocal(),
+    apiKey.value ? refreshAllowedModels() : Promise.resolve(),
   ]);
+  await checkLocal();
 });
 </script>
 
@@ -401,7 +453,18 @@ onMounted(async () => {
     </div>
   </div>
 
-  <div class="shell" :class="{ 'shell-blocked': !apiKeyVerified }">
+  <!-- Top-of-window download progress bar -->
+  <div v-if="pulling" class="download-bar" role="progressbar" :aria-valuenow="pulling.pct" aria-valuemin="0" aria-valuemax="100">
+    <div class="download-bar-fill" :class="{ indeterminate: pulling.pct === 0 }" :style="{ width: pulling.pct > 0 ? pulling.pct + '%' : undefined }"></div>
+    <div class="download-bar-text">
+      <span class="download-bar-label">DOWNLOADING</span>
+      <code class="download-bar-name" :title="pulling.name">{{ pulling.name }}</code>
+      <span class="download-bar-status">{{ pulling.status }}</span>
+      <span class="download-bar-pct">{{ pulling.pct }}%</span>
+    </div>
+  </div>
+
+  <div class="shell" :class="{ 'shell-blocked': !apiKeyVerified, 'shell-with-progress': !!pulling }">
     <!-- Sidebar -->
     <aside class="sidebar">
       <div class="brand">
@@ -432,11 +495,11 @@ onMounted(async () => {
         <select
           class="model-select"
           v-model="selectedModel"
-          :disabled="!localStatus.running || models.length === 0"
+          :disabled="!localStatus.running || allModelChoices.length === 0 || !!pulling"
         >
-          <option v-if="models.length === 0" value="">No models pulled</option>
-          <option v-for="m in models" :key="m.name" :value="m.name">
-            {{ m.name }}
+          <option v-if="allModelChoices.length === 0" value="">No models available</option>
+          <option v-for="c in allModelChoices" :key="c.name" :value="c.name">
+            {{ c.downloaded ? '● ' : '⬇ ' }}{{ c.name }}{{ c.downloaded ? '' : ' (download)' }}
           </option>
         </select>
 
@@ -473,8 +536,26 @@ onMounted(async () => {
           </div>
         </div>
 
-        <button class="update-btn" @click="handleUpdate" :disabled="updating" title="Pull updates and update the app">
-          {{ updating ? 'UPDATING...' : 'UPDATE APP' }}
+        <button
+          class="update-btn"
+          :class="{ 'update-btn-available': updateInfo?.available && !updating }"
+          @click="handleUpdate"
+          :disabled="updating || !updateInfo?.available"
+          :title="updating
+            ? 'Updating…'
+            : updateInfo?.available
+              ? `Update available: v${updateInfo.current} → v${updateInfo.latest}`
+              : updateInfo
+                ? `Up to date (v${updateInfo.current})`
+                : 'Checking for updates…'"
+        >
+          <span v-if="updating">UPDATING...</span>
+          <template v-else-if="updateInfo?.available">
+            <span class="update-dot"></span>
+            UPDATE TO v{{ updateInfo.latest }}
+          </template>
+          <span v-else-if="updateInfo">UP TO DATE · v{{ updateInfo.current }}</span>
+          <span v-else>CHECKING…</span>
         </button>
 
         <button class="signout-btn" @click="signOut" title="Clear API key and sign out">
@@ -500,10 +581,6 @@ onMounted(async () => {
       <div v-else-if="cloudStatus.kind !== 'ok'" class="banner">
         Cloud auth check failed. Your API key may have been revoked at
         <a href="https://access.cerberusai.dev" target="_blank" rel="noopener">access.cerberusai.dev</a>.
-      </div>
-      <div v-else-if="pulling" class="banner pulling">
-        Pulling <code>{{ pulling.name }}</code> · {{ pulling.status }}
-        <span v-if="pulling.pct > 0"> · {{ pulling.pct }}%</span>
       </div>
 
       <div ref="messagesEl" class="messages">
@@ -538,21 +615,25 @@ onMounted(async () => {
           </p>
 
           <!-- Model picker if none pulled yet -->
-          <div v-if="localStatus.running && models.length === 0" class="pull-block">
+          <div v-if="localStatus.running && models.length === 0 && pullableModels.length > 0" class="pull-block">
             <p class="pull-eyebrow">No local models yet — pull one to start</p>
             <div class="pull-grid">
               <button
-                v-for="m in SUGGESTED_MODELS"
-                :key="m.tag"
+                v-for="tag in pullableModels"
+                :key="tag"
                 class="pull-card"
                 :disabled="!!pulling"
-                @click="pullModel(m.tag)"
+                @click="pullModel(tag)"
               >
-                <span class="pull-name">{{ m.tag }}</span>
-                <span class="pull-meta">{{ m.size }} · {{ m.note }}</span>
-                <span class="pull-action">{{ pulling?.name === m.tag ? 'Pulling…' : 'Pull' }}</span>
+                <span class="pull-name">{{ tag }}</span>
+                <span class="pull-meta">From registry.cerberusai.dev</span>
+                <span class="pull-action">{{ pulling?.name === tag ? 'Pulling…' : 'Pull' }}</span>
               </button>
             </div>
+          </div>
+          <div v-else-if="localStatus.running && allowedModels.length === 0" class="pull-block">
+            <p class="pull-eyebrow">No models available on your account</p>
+            <p class="pull-meta">Check <a href="https://access.cerberusai.dev" target="_blank" rel="noopener">access.cerberusai.dev</a></p>
           </div>
 
           <div v-else class="suggestions">
@@ -577,7 +658,7 @@ onMounted(async () => {
           ></textarea>
           <button
             class="send-btn"
-            :disabled="!draft.trim() || streaming || !localStatus.running || cloudStatus.kind !== 'ok' || !selectedModel"
+            :disabled="!draft.trim() || streaming || !localStatus.running || cloudStatus.kind !== 'ok' || !selectedModel || !!pulling || !models.some((m) => m.name === selectedModel)"
             @click="send"
             aria-label="Send"
           >
@@ -688,8 +769,30 @@ onMounted(async () => {
   opacity: 0.5;
   cursor: not-allowed;
 }
-  border-color: var(--glass-border-red);
-  background: var(--red-glow-dim);
+.update-btn-available {
+  background: linear-gradient(135deg, var(--red-500), var(--red-600));
+  border-color: var(--red-400);
+  box-shadow: 0 0 0 1px var(--red-500), 0 6px 18px var(--red-glow);
+  animation: update-pulse 2.4s infinite ease-in-out;
+}
+@keyframes update-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--red-500), 0 6px 18px var(--red-glow); }
+  50%      { box-shadow: 0 0 0 1px var(--red-400), 0 8px 24px var(--red-glow); }
+}
+.update-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 6px #fff;
+  animation: dot-pulse 1.4s infinite ease-in-out;
+  vertical-align: middle;
+}
+@keyframes dot-pulse {
+  0%, 100% { opacity: 0.6; }
+  50%      { opacity: 1; }
 }
 
 /* API Key Gate */
@@ -864,6 +967,86 @@ onMounted(async () => {
   border-color: var(--glass-border-red);
   background: var(--red-glow-dim);
   color: var(--red-400);
+}
+
+/* Top-of-window download progress bar */
+.download-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 36px;
+  z-index: 900;
+  background: rgba(2, 2, 4, 0.92);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--glass-border-red);
+  overflow: hidden;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+.download-bar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: linear-gradient(90deg, var(--red-600), var(--red-400));
+  box-shadow: 0 0 16px var(--red-glow), inset 0 0 12px rgba(255, 80, 80, 0.4);
+  transition: width 240ms var(--ease-out);
+  width: 0;
+}
+.download-bar-fill.indeterminate {
+  width: 28% !important;
+  animation: download-indeterminate 1.4s ease-in-out infinite;
+}
+@keyframes download-indeterminate {
+  0%   { left: -30%; }
+  100% { left: 100%; }
+}
+.download-bar-text {
+  position: relative;
+  z-index: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.download-bar-label {
+  font-weight: 800;
+  letter-spacing: 2.5px;
+  color: #fff;
+  flex-shrink: 0;
+}
+.download-bar-name {
+  font-weight: 600;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  padding: 2px 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.download-bar-status {
+  color: rgba(255, 255, 255, 0.75);
+  text-transform: lowercase;
+  letter-spacing: 0.5px;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.download-bar-pct {
+  margin-left: auto;
+  font-weight: 800;
+  letter-spacing: 1px;
+  flex-shrink: 0;
+}
+.shell-with-progress {
+  padding-top: 36px;
 }
 
 /* Pulling banner variant */
