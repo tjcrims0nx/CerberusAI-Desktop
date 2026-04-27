@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/svg+xml" href="/cerberus.svg">
+    <title>Cerberus AI - Unfiltered AI Models</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: '#ff3d2e',
+                        bone: {
+                            50: '#f6f7fb',
+                            400: '#8a93a8',
+                        },
+                        ink: {
+                            900: 'rgba(9, 11, 18, 0.92)',
+                            950: '#05060a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #05060a;
+            color: #f6f7fb;
+            overflow-x: hidden;
+        }
+
+        .glow-orb {
+            position: fixed;
+            width: 60vw;
+            height: 60vw;
+            max-width: 800px;
+            max-height: 800px;
+            background: radial-gradient(circle, rgba(255, 61, 46, 0.12) 0%, transparent 70%);
+            filter: blur(100px);
+            z-index: -1;
+            pointer-events: none;
+        }
+
+        .orb-1 { top: -20%; right: -10%; }
+        .orb-2 { bottom: -20%; left: -10%; }
+
+        .glass {
+            background: rgba(9, 11, 18, 0.92);
+            backdrop-filter: blur(12px);
+            border: 1px solid hsla(0, 0%, 100%, 0.09);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #ff5445 0%, #c61f12 100%);
+            box-shadow: 0 0 20px rgba(255, 61, 46, 0.4);
+            transition: all 0.3s ease;
+        }
+
+        .btn-primary:hover {
+            box-shadow: 0 0 30px rgba(255, 61, 46, 0.6);
+            transform: translateY(-2px);
+        }
+
+        .text-gradient {
+            background: linear-gradient(to bottom right, #f6f7fb, #ff3d2e);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero-head {
+            animation: float 6s ease-in-out infinite;
+        }
+
+        @keyframes float {
+            0%, 100% { transform: translateY(0); filter: drop-shadow(0 0 20px rgba(255, 61, 46, 0.1)); }
+            50% { transform: translateY(-15px); filter: drop-shadow(0 0 35px rgba(255, 61, 46, 0.3)); }
+        }
+
+        .shimmer {
+            background: linear-gradient(90deg, #f6f7fb 0%, #ff8a7e 50%, #f6f7fb 100%);
+            background-size: 200% auto;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: shimmer 4s linear infinite;
+        }
+
+        @keyframes shimmer {
+            to { background-position: 200% center; }
+        }
+    </style>
+</head>
+<body class="selection:bg-primary/30 min-h-screen flex flex-col">
+    <div class="glow-orb orb-1"></div>
+    <div class="glow-orb orb-2"></div>
+
+    <nav class="max-w-7xl mx-auto w-full px-6 py-8 flex justify-between items-center z-10">
+        <div class="flex items-center gap-3">
+            <img src="/cerberus.svg" alt="Cerberus Logo" class="w-10 h-10">
+            <span class="text-2xl font-black tracking-tighter uppercase italic text-bone-50">Cerberus <span class="text-primary text-glow">AI</span></span>
+        </div>
+        <div class="hidden md:flex gap-8 text-xs font-bold uppercase tracking-widest text-bone-400">
+            <a href="https://github.com/tjcrims0nx/CerberusAI-Desktop" class="hover:text-primary transition-colors">Project Hub</a>
+            <a href="/docs/api" class="hover:text-primary transition-colors">API Console</a>
+        </div>
+    </nav>
+
+    <main class="flex-grow flex flex-col items-center justify-center max-w-5xl mx-auto px-6 pt-12 pb-24 text-center z-10">
+        <div class="flex justify-center mb-12 relative">
+             <img src="/assets/logo.png" alt="Cerberus Head" class="hero-head w-64 md:w-[22rem] h-auto relative z-10">
+             <div class="absolute inset-0 bg-primary/20 blur-[100px] rounded-full z-0 opacity-50"></div>
+        </div>
+
+        <h1 class="text-5xl md:text-8xl font-black mb-8 uppercase tracking-tighter leading-[0.9] italic text-gradient">
+            Unfiltered.<br>Uncensored.<br><span class="shimmer">Unbound.</span>
+        </h1>
+
+        <p class="text-lg md:text-2xl text-bone-400 mb-16 font-medium max-w-3xl leading-relaxed">
+            Open-weight language models built without corporate guardrails. 
+            Cerberus removes the layers responsible for refusal behavior while preserving 
+            core intelligence.
+        </p>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-20 w-full">
+            <div class="glass p-10 rounded-[2rem] text-left group hover:border-primary/40 transition-all duration-500">
+                <div class="text-primary mb-6">
+                    <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71L12 2z"/></svg>
+                </div>
+                <h3 class="text-bone-50 text-2xl font-bold mb-4 uppercase tracking-tight">Pure Performance</h3>
+                <p class="text-bone-400 leading-relaxed text-sm md:text-base">
+                    Engineered on next-generation architectures including Qwen 2.5 and GLM-4, 
+                    Cerberus models undergo complete refusal ablation to deliver raw, 
+                    uncensored intelligence built from foundational principles.
+                </p>
+            </div>
+            <div class="glass p-10 rounded-[2rem] text-left group hover:border-primary/40 transition-all duration-500">
+                <div class="text-primary mb-6">
+                    <svg class="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>
+                </div>
+                <h3 class="text-bone-50 text-2xl font-bold mb-4 uppercase tracking-tight">Total Freedom</h3>
+                <p class="text-bone-400 leading-relaxed text-sm md:text-base">
+                    A model that treats every prompt equally. No more "I can't help with that." 
+                    Only direct, unfiltered intelligence for your most complex tasks.
+                </p>
+            </div>
+        </div>
+
+        <div class="glass p-10 md:p-16 rounded-[3rem] w-full border-primary/20 relative overflow-hidden group">
+            <div class="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-50 group-hover:opacity-100 transition-opacity duration-700"></div>
+            <div class="relative z-10">
+                <h2 class="text-primary text-3xl md:text-4xl font-black uppercase italic mb-8 tracking-tighter">System Update Status</h2>
+                <div class="flex flex-col md:flex-row gap-8 items-center justify-center mb-12">
+                    <div class="flex items-center gap-3">
+                        <div class="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
+                        <span class="text-primary text-xs font-bold uppercase tracking-[0.2em]">API: Development</span>
+                    </div>
+                    <div class="flex items-center gap-3">
+                        <div class="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]"></div>
+                        <span class="text-bone-50 text-xs font-bold uppercase tracking-[0.2em]">Downloads: Operational</span>
+                    </div>
+                </div>
+                <a href="https://github.com/tjcrims0nx/CerberusAI-Desktop/releases/latest" 
+                   class="btn-primary inline-block px-14 py-5 text-bone-50 font-black uppercase rounded-full text-xl md:text-2xl tracking-tighter italic">
+                    Unlock Cerberus Desktop
+                </a>
+                <p class="mt-8 text-xs text-bone-400 font-bold uppercase tracking-widest opacity-50">Local Intelligence. No Compromise.</p>
+            </div>
+        </div>
+    </main>
+
+    <footer class="max-w-7xl mx-auto w-full px-6 py-16 border-t border-white/5 flex flex-col md:flex-row justify-between items-center gap-8 z-10">
+        <div class="text-bone-400/30 text-[10px] uppercase font-bold tracking-[0.3em]">
+            &copy; 2026 CerberusAI Ecosystem. Unfiltered Intelligence Project.
+        </div>
+        <div class="flex gap-10 text-[10px] font-bold uppercase tracking-[0.2em] text-bone-400/50">
+            <a href="#" class="hover:text-primary transition-colors">Privacy Protocol</a>
+            <a href="#" class="hover:text-primary transition-colors">Service Terms</a>
+            <a href="https://access.cerberusai.dev" class="hover:text-primary transition-colors">Developer Portal</a>
+        </div>
+    </footer>
+</body>
+</html>

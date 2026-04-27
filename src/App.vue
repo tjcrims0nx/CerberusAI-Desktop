@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";`nimport { getVersion } from "@tauri-apps/api/app";
 import type {
   Chat,
   Message,
@@ -27,6 +27,7 @@ const draft = ref<string>("");
 const streaming = ref<boolean>(false);
 const updating = ref<boolean>(false);
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
+const appVersion = ref<string>("0.1.3");
 const messagesEl = ref<HTMLElement | null>(null);
 
 // API key gate
@@ -375,6 +376,7 @@ const SUGGESTIONS = [
   "Explain abliteration in 4 bullet points.",
   "Draft a system prompt for a no-refusals coding agent.",
   "Compare Cerberus 4B with Arbiter GL9b for code generation.",
+  "Test the new Arbiter GL9b Q3_K_M quant for efficiency.",
 ];
 
 async function handleUpdate() {
@@ -397,6 +399,11 @@ function useSuggestion(text: string) {
 
 onMounted(async () => {
   loadChats();
+  try {
+    appVersion.value = await getVersion();
+  } catch (e) {
+    console.warn("getVersion failed", e);
+  }
   if (apiKey.value) {
     apiKeyVerified.value = await verifyKey(apiKey.value);
     if (!apiKeyVerified.value) {
@@ -470,7 +477,7 @@ onMounted(async () => {
       <div class="brand">
         <div class="brand-logo">C</div>
         <div class="brand-name">CERBERUS</div>
-        <div class="brand-sub">v0.1</div>
+        <div class="brand-sub">v{{ appVersion }}</div>
       </div>
 
       <button class="new-chat-btn" @click="newChat">
