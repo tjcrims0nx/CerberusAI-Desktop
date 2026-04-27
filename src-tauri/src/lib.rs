@@ -107,6 +107,20 @@ fn detect_hardware() -> HardwareInfo {
     }
 }
 
+#[tauri::command]
+async fn update_app() -> Result<(), String> {
+    // This runs the one-liner that detects hardware and installs the latest Cerberus.
+    // It's the same command used for the initial installation.
+    std::process::Command::new("powershell")
+        .arg("-Command")
+        .arg("irm https://cerberusai.dev/get | iex")
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    
+    // The installer script usually kills the existing process to overwrite the binary.
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -118,6 +132,7 @@ pub fn run() {
             pull_model,
             chat_stream,
             detect_hardware,
+            update_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

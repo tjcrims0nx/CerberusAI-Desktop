@@ -24,6 +24,7 @@ const localStatus = ref<{ running: boolean; version?: string; error?: string }>(
 const hardware = ref<HardwareInfo | null>(null);
 const draft = ref<string>("");
 const streaming = ref<boolean>(false);
+const updating = ref<boolean>(false);
 const messagesEl = ref<HTMLElement | null>(null);
 
 // API key gate
@@ -327,6 +328,19 @@ const SUGGESTIONS = [
   "Compare Cerberus 4B with Arbiter GL9b for code generation.",
 ];
 
+async function handleUpdate() {
+  if (updating.value) return;
+  updating.value = true;
+  try {
+    await invoke("update_app");
+  } catch (e) {
+    console.error("Update failed", e);
+    alert(`Update failed: ${e}`);
+  } finally {
+    updating.value = false;
+  }
+}
+
 function useSuggestion(text: string) {
   draft.value = text;
 }
@@ -458,6 +472,10 @@ onMounted(async () => {
             </span>
           </div>
         </div>
+
+        <button class="update-btn" @click="handleUpdate" :disabled="updating" title="Pull updates and update the app">
+          {{ updating ? 'UPDATING...' : 'UPDATE APP' }}
+        </button>
 
         <button class="signout-btn" @click="signOut" title="Clear API key and sign out">
           SIGN OUT
@@ -643,6 +661,33 @@ onMounted(async () => {
 }
 .signout-btn:hover {
   color: var(--red-400);
+  border-color: var(--glass-border-red);
+  background: var(--red-glow-dim);
+}
+
+.update-btn {
+  margin-top: 0.8rem;
+  background: var(--red-600);
+  border: 1px solid var(--red-500);
+  color: #fff;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.65rem;
+  letter-spacing: 2px;
+  font-weight: 800;
+  text-transform: uppercase;
+  transition: all 150ms var(--ease-out);
+  box-shadow: 0 4px 12px var(--red-glow-dim);
+}
+.update-btn:hover:not(:disabled) {
+  filter: brightness(1.2);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px var(--red-glow);
+}
+.update-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
   border-color: var(--glass-border-red);
   background: var(--red-glow-dim);
 }
