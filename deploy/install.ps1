@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Cerberus AI — Windows installer / dependency bootstrapper.
+    Cerberus AI - Windows installer / dependency bootstrapper.
 
 .DESCRIPTION
     One-shot installer for Cerberus desktop. Detects and installs:
@@ -48,6 +48,13 @@ $RepoName     = "CerberusAI-Desktop"
 $WebView2Url  = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"   # Evergreen Bootstrapper
 $OllamaUrl    = "https://ollama.com/download/OllamaSetup.exe"
 $WorkDir      = Join-Path $env:TEMP "CerberusInstall"
+
+# ---------- Custom Model Registry ----------
+$CustomModels = @{
+    "cerberus-4b" = "https://llm.cerberusai.dev/models/cerberus-4b-v2-abliterated/cerberus-4b-v2-abliterated-Q4_K_M.gguf"
+    "cerberus-4b-v2-abliterated" = "https://llm.cerberusai.dev/models/cerberus-4b-v2-abliterated/cerberus-4b-v2-abliterated-Q4_K_M.gguf"
+    "arbiter-9b"  = "https://llm.cerberusai.dev/models/Arbiter-GL9b/Arbiter-GL9b-Q4_K_M.gguf"
+}
 
 # ---------- Brand output ----------
 function Write-Brand {
@@ -246,7 +253,7 @@ function Test-MinimumHardware {
     if ($gpu) {
         Write-Host "$($gpu.Name) ($vramGB GB VRAM)" -ForegroundColor Gray
     } else {
-        Write-Host "(none detected — CPU-only inference)" -ForegroundColor Yellow
+        Write-Host "(none detected - CPU-only inference)" -ForegroundColor Yellow
     }
     Write-Host "  Free disk : " -NoNewline -ForegroundColor DarkGray
     Write-Host "$freeDiskGB GB on $env:SystemDrive" -ForegroundColor $(if ($freeDiskGB -ge $MIN_FREE_DISK_GB) { "Gray" } else { "Red" })
@@ -338,7 +345,14 @@ function Ensure-WebView2 {
     $exe = Join-Path $WorkDir "MicrosoftEdgeWebview2Setup.exe"
     Save-Url -Url $WebView2Url -Path $exe
     $args = @("/silent", "/install")
-    $p = Start-Process -FilePath $exe -ArgumentList $args -Wait -PassThru -Verb RunAs
+    $procParams = @{
+        FilePath     = $exe
+        ArgumentList = $args
+        Wait         = $true
+        PassThru     = $true
+        Verb         = "RunAs"
+    }
+    $p = Start-Process @procParams
     if ($p.ExitCode -ne 0) { throw "WebView2 installer exit code $($p.ExitCode)" }
     if (-not (Get-WebView2Version)) { throw "WebView2 install reported success but runtime still not detected." }
     Write-OK "WebView2 installed"
@@ -359,7 +373,13 @@ function Ensure-Ollama {
             $exe = Join-Path $WorkDir "OllamaSetup.exe"
             Save-Url -Url $OllamaUrl -Path $exe
             $oargs = if ($Silent) { @("/SILENT") } else { @() }
-            $p = Start-Process -FilePath $exe -ArgumentList $oargs -Wait -PassThru
+            $procParams = @{
+                FilePath = $exe
+                Wait     = $true
+                PassThru = $true
+            }
+            if ($oargs.Count -gt 0) { $procParams.ArgumentList = $oargs }
+            $p = Start-Process @procParams
             if ($p.ExitCode -ne 0) { throw "Ollama installer exit code $($p.ExitCode)" }
         }
         # Refresh PATH so we can find ollama.exe in this session.
@@ -402,9 +422,31 @@ function Ensure-Model {
         Write-OK "Model already pulled ($Model)"
         return
     }
+
+    # Check custom registry first
+    if ($CustomModels.ContainsKey($Model)) {
+        $url = $CustomModels[$Model]
+        $fileName = [System.IO.Path]::GetFileName($url)
+        Ensure-WorkDir
+        $destPath = Join-Path $WorkDir $fileName
+        
+        Write-Step "Downloading custom model $Model from Cerberus Registry..."
+        Save-Url -Url $url -Path $destPath
+        
+        Write-Step "Registering $Model with Ollama..."
+        $modelfileContent = "FROM `"$destPath`""
+        $modelfilePath = Join-Path $WorkDir "Modelfile-$Model"
+        $modelfileContent | Out-File -FilePath $modelfilePath -Encoding ascii -Force
+        
+        & ollama create $Model -f $modelfilePath
+        if ($LASTEXITCODE -ne 0) { throw "ollama create $Model failed ($LASTEXITCODE)" }
+        Write-OK "Model $Model imported and registered"
+        return
+    }
+
     Write-Step "Pulling model $Model (this can take a while)"
     & ollama pull $Model
-    if ($LASTEXITCODE -ne 0) { throw "ollama pull $Model failed ($LASTEXITCODE)" }
+    if ($LASTEXITCODE -ne 0) { throw "ollama pull $Model failed ($LASTEXITCODE). Model may not exist in official library." }
     Write-OK "Model $Model pulled"
 }
 
@@ -431,7 +473,13 @@ function Install-CerberusApp {
         $p = Start-Process -FilePath "msiexec.exe" -ArgumentList $msiArgs -Wait -PassThru
     } else {
         $args = if ($Silent) { @("/S") } else { @() }
-        $p = Start-Process -FilePath $dest -ArgumentList $args -Wait -PassThru
+        $procParams = @{
+            FilePath = $dest
+            Wait     = $true
+            PassThru = $true
+        }
+        if ($args.Count -gt 0) { $procParams.ArgumentList = $args }
+        $p = Start-Process @procParams
     }
     if ($p.ExitCode -ne 0) { throw "Cerberus installer exit code $($p.ExitCode)" }
     Write-OK "Cerberus installed"
@@ -464,5 +512,7 @@ try {
 
 Write-Host ""
 Write-OK "All set. Launch Cerberus from the Start Menu, or run:  cerberus"
+Write-Host "    Note: Premium models (Arbiter/Cerberus) will be pulled automatically" -ForegroundColor DarkGray
+Write-Host "          from our registry once you open the desktop app." -ForegroundColor DarkGray
 Write-Host "    Docs:    https://cerberusai.dev/docs" -ForegroundColor DarkGray
 Write-Host "    Discord: https://discord.gg/YvfewgZ6re`n" -ForegroundColor DarkGray
