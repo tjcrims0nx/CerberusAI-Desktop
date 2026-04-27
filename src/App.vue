@@ -36,6 +36,7 @@ const verifyError = ref<string>("");
 // Suggested Cerberus models that the user can pull on demand
 const SUGGESTED_MODELS = [
   { tag: "cerberus-4b-v2-abliterated", size: "~2.6 GB", note: "Q4_K_M · runs on most hardware" },
+  { tag: "Arbiter-GL9b", size: "~6.2 GB", note: "Q4_K_M · high-performance reasoning" },
 ];
 
 // Active model pull
@@ -107,10 +108,21 @@ watch(selectedModel, (v) => {
 async function refreshModels() {
   try {
     const list = await invoke<OllamaModel[]>("list_models");
-    models.value = list;
-    if (!selectedModel.value && list.length) {
-      const cerberus = list.find((m) => m.name.toLowerCase().includes("cerberus"));
-      selectedModel.value = cerberus?.name ?? list[0]?.name ?? "";
+    // Only allow Cerberus and Arbiter models
+    const filtered = list.filter(m => 
+      m.name.toLowerCase().includes("cerberus") || 
+      m.name.toLowerCase().includes("arbiter")
+    );
+    models.value = filtered;
+
+    // If current selected model is not in the filtered list, reset it
+    if (selectedModel.value && !filtered.find(m => m.name === selectedModel.value)) {
+      selectedModel.value = "";
+    }
+
+    if (!selectedModel.value && filtered.length) {
+      const cerberus = filtered.find((m) => m.name.toLowerCase().includes("cerberus"));
+      selectedModel.value = cerberus?.name ?? filtered[0]?.name ?? "";
     }
   } catch (e) {
     console.warn("list_models failed", e);
