@@ -49,7 +49,7 @@ async fn check_api(api_key: String) -> Result<String, String> {
 /// Fetch the server-side allowlist of models from llm.cerberusai.dev.
 /// Returned ids are qualified for `ollama pull`.
 #[tauri::command]
-async fn list_allowed_models(api_key: String) -> Result<Vec<String>, String> {
+async fn list_allowed_models(api_key: String) -> Result<Vec<ollama::AllowedModel>, String> {
     ollama::list_allowed(&api_key).await.map_err(|e| e.to_string())
 }
 

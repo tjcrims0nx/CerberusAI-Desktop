@@ -91,9 +91,20 @@ pub async fn check_update(current: &str) -> Result<UpdateInfo, anyhow::Error> {
 
 // ─── Cloud: server-side model allowlist ────────────────────────────────────
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct AllowedModel {
+    pub id: String,
+    pub description: String,
+    pub quants: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct OpenAiModelEntry {
     id: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    quants: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -105,7 +116,7 @@ struct OpenAiModelsResp {
 /// Fetch the OpenAI-style model list from api.cerberusai.dev. The model id
 /// (e.g. `Arbiter-GL9b`) is also the directory name on llm.cerberusai.dev
 /// and the name we'll use for the local Ollama model.
-pub async fn list_allowed(api_key: &str) -> Result<Vec<String>, anyhow::Error> {
+pub async fn list_allowed(api_key: &str) -> Result<Vec<AllowedModel>, anyhow::Error> {
     let c = http()?;
     let r = c
         .get(format!("{CLOUD_API_BASE}/v1/models"))
@@ -120,7 +131,11 @@ pub async fn list_allowed(api_key: &str) -> Result<Vec<String>, anyhow::Error> {
         return Err(anyhow::anyhow!("models API returned status {status}"));
     }
     let body = r.json::<OpenAiModelsResp>().await?;
-    Ok(body.data.into_iter().map(|m| m.id).collect())
+    Ok(body.data.into_iter().map(|m| AllowedModel {
+        id: m.id,
+        description: m.description,
+        quants: m.quants,
+    }).collect())
 }
 
 // ─── Local Ollama: status + model management ──────────────────────────────

@@ -13,6 +13,12 @@ export interface Chat {
   createdAt: number;
 }
 
+export interface AllowedModel {
+  id: string;
+  description: string;
+  quants: string;
+}
+
 export interface OllamaModel {
   name: string;
   size: number;

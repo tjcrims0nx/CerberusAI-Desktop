@@ -6,6 +6,7 @@ import type {
   Chat,
   Message,
   OllamaModel,
+  AllowedModel,
   OllamaStatus,
   HardwareInfo,
   ChatStreamChunk,
@@ -18,7 +19,7 @@ const APIKEY_KEY = "cerberus.apiKey.v1";
 const chats = ref<Chat[]>([]);
 const activeId = ref<string | null>(null);
 const models = ref<OllamaModel[]>([]);
-const allowedModels = ref<string[]>([]);
+const allowedModels = ref<AllowedModel[]>([]);
 const selectedModel = ref<string>(localStorage.getItem(MODEL_KEY) || "");
 const cloudStatus = ref<OllamaStatus>({ kind: "checking" });
 const localStatus = ref<{ running: boolean; version?: string; error?: string }>({ running: false });
@@ -45,10 +46,15 @@ const pulling = ref<{ name: string; pct: number; status: string } | null>(null);
 // auto-pulled (LM Studio-style).
 const allModelChoices = computed(() => {
   const local = new Set(models.value.map((m) => m.name));
-  return allowedModels.value.map((name) => ({ name, downloaded: local.has(name) }));
+  return allowedModels.value.map((m) => ({ 
+    name: m.id, 
+    downloaded: local.has(m.id),
+    description: m.description,
+    quants: m.quants
+  }));
 });
 const pullableModels = computed(() =>
-  allModelChoices.value.filter((c) => !c.downloaded).map((c) => c.name)
+  allModelChoices.value.filter((c) => !c.downloaded)
 );
 
 const activeChat = computed<Chat | null>(() =>
@@ -133,7 +139,7 @@ async function refreshAllowedModels() {
     return;
   }
   try {
-    allowedModels.value = await invoke<string[]>("list_allowed_models", {
+    allowedModels.value = await invoke<AllowedModel[]>("list_allowed_models", {
       apiKey: apiKey.value,
     });
   } catch (e) {
@@ -626,15 +632,18 @@ onMounted(async () => {
             <p class="pull-eyebrow">No local models yet — pull one to start</p>
             <div class="pull-grid">
               <button
-                v-for="tag in pullableModels"
-                :key="tag"
+                v-for="m in pullableModels"
+                :key="m.name"
                 class="pull-card"
                 :disabled="!!pulling"
-                @click="pullModel(tag)"
+                @click="pullModel(m.name)"
               >
-                <span class="pull-name">{{ tag }}</span>
-                <span class="pull-meta">From registry.cerberusai.dev</span>
-                <span class="pull-action">{{ pulling?.name === tag ? 'Pulling…' : 'Pull' }}</span>
+                <div class="pull-header">
+                  <span class="pull-name">{{ m.name }}</span>
+                  <span class="pull-quants">{{ m.quants }}</span>
+                </div>
+                <span class="pull-meta">{{ m.description }}</span>
+                <span class="pull-action">{{ pulling?.name === m.name ? 'Pulling…' : 'Pull Model' }}</span>
               </button>
             </div>
           </div>
@@ -1113,6 +1122,19 @@ onMounted(async () => {
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.85rem;
   font-weight: 700;
+}
+.pull-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.pull-quants {
+  font-size: 0.6rem;
+  background: var(--red-600);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 800;
+  letter-spacing: 1px;
 }
 .pull-meta {
   font-size: 0.72rem;
