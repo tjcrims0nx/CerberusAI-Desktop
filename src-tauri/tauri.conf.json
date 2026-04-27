@@ -22,11 +22,11 @@
         "decorations": true,
         "transparent": false,
         "theme": "Dark",
-        "backgroundColor": "#05060a"
+        "backgroundColor": "#020204"
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: https://asset.localhost; connect-src 'self' http://127.0.0.1:11434 ipc: http://ipc.localhost; font-src 'self' data:"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: asset: https://asset.localhost; connect-src 'self' https://api.cerberusai.dev ipc: http://ipc.localhost; font-src 'self' data: https://fonts.gstatic.com"
     }
   },
   "bundle": {

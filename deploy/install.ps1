@@ -166,6 +166,122 @@ function Test-WingetReady {
     } catch { return $false }
 }
 
+# ---------- Hardware preflight ----------
+# Cerberus 4B v2 Abliterated Q4_K_M (~2.6 GB GGUF) is the smallest model
+# offered on cerberusai.dev. These are the absolute minimums to load + run it
+# at usable speed via Ollama / llama.cpp on Windows.
+$MIN_RAM_GB        = 6
+$MIN_FREE_DISK_GB  = 5
+$REC_RAM_GB        = 8
+$REC_VRAM_GB       = 3
+$MODEL_SMALLEST    = "cerberus-4b-v2-abliterated (Q4_K_M, 2.6 GB)"
+
+function Test-CpuAvx2 {
+    # Win32 IsProcessorFeaturePresent — feature 40 = PF_AVX2_INSTRUCTIONS_AVAILABLE
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]'CerbCpu').Type) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class CerbCpu {
+    [DllImport("kernel32.dll")]
+    public static extern bool IsProcessorFeaturePresent(uint feature);
+}
+"@ -ErrorAction SilentlyContinue
+        }
+        return [CerbCpu]::IsProcessorFeaturePresent(40)
+    } catch {
+        return $true   # if we can't check, don't block
+    }
+}
+
+function Get-PrimaryGpu {
+    try {
+        $gpus = @(Get-CimInstance Win32_VideoController -ErrorAction Stop |
+            Where-Object { $_.Name -notmatch "Basic Render|Microsoft Remote|Hyper-V" })
+        if ($gpus.Count -eq 0) { return $null }
+        # Prefer dedicated NVIDIA / AMD over Intel iGPU
+        $dedicated = $gpus | Where-Object { $_.Name -match "NVIDIA|GeForce|RTX|GTX|Radeon|RX |Quadro|Tesla|Arc " } | Select-Object -First 1
+        $primary = if ($dedicated) { $dedicated } else { $gpus[0] }
+        $vramMB = if ($primary.AdapterRAM -and $primary.AdapterRAM -gt 0) {
+            [math]::Round($primary.AdapterRAM / 1MB)
+        } else { 0 }
+        return [pscustomobject]@{
+            Name   = $primary.Name
+            VramMB = $vramMB
+        }
+    } catch { return $null }
+}
+
+function Get-FreeDiskGB {
+    param([string]$Drive = $env:SystemDrive)
+    try {
+        $letter = $Drive[0]
+        $d = Get-PSDrive -Name $letter -ErrorAction Stop
+        return [math]::Round($d.Free / 1GB, 1)
+    } catch { return 0 }
+}
+
+function Test-MinimumHardware {
+    Write-Step "Hardware preflight (must run $MODEL_SMALLEST)"
+
+    $os         = Get-CimInstance Win32_OperatingSystem
+    $cpu        = Get-CimInstance Win32_Processor | Select-Object -First 1
+    $totalRamGB = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+    $freeDiskGB = Get-FreeDiskGB
+    $is64       = [System.Environment]::Is64BitOperatingSystem
+    $hasAvx2    = Test-CpuAvx2
+    $cpuName    = if ($cpu) { $cpu.Name.Trim() } else { "(unknown)" }
+    $cpuCores   = if ($cpu) { $cpu.NumberOfCores } else { 0 }
+    $gpu        = Get-PrimaryGpu
+    $vramGB     = if ($gpu -and $gpu.VramMB -gt 0) { [math]::Round($gpu.VramMB / 1024, 1) } else { 0 }
+
+    # Report
+    Write-Host ""
+    Write-Host "  CPU       : " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$cpuName ($cpuCores cores, AVX2=$hasAvx2)" -ForegroundColor Gray
+    Write-Host "  RAM       : " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$totalRamGB GB total" -ForegroundColor $(if ($totalRamGB -ge $REC_RAM_GB) { "Gray" } else { "Yellow" })
+    Write-Host "  GPU       : " -NoNewline -ForegroundColor DarkGray
+    if ($gpu) {
+        Write-Host "$($gpu.Name) ($vramGB GB VRAM)" -ForegroundColor Gray
+    } else {
+        Write-Host "(none detected — CPU-only inference)" -ForegroundColor Yellow
+    }
+    Write-Host "  Free disk : " -NoNewline -ForegroundColor DarkGray
+    Write-Host "$freeDiskGB GB on $env:SystemDrive" -ForegroundColor $(if ($freeDiskGB -ge $MIN_FREE_DISK_GB) { "Gray" } else { "Red" })
+    Write-Host ""
+
+    # Hard blockers
+    $blockers = @()
+    if (-not $is64)                       { $blockers += "Cerberus requires 64-bit Windows. Current OS is 32-bit." }
+    if (-not $hasAvx2)                    { $blockers += "CPU does not report AVX2 support. Cerberus models need AVX2 for usable speed." }
+    if ($totalRamGB -lt $MIN_RAM_GB)      { $blockers += "Need at least $MIN_RAM_GB GB system RAM (you have $totalRamGB GB)." }
+    if ($freeDiskGB -lt $MIN_FREE_DISK_GB) { $blockers += "Need at least $MIN_FREE_DISK_GB GB free on $env:SystemDrive (you have $freeDiskGB GB)." }
+
+    if ($blockers.Count -gt 0) {
+        Write-Err2 "This machine cannot run $MODEL_SMALLEST."
+        foreach ($b in $blockers) {
+            Write-Host "    - $b" -ForegroundColor Red
+        }
+        Write-Host ""
+        Write-Host "  Install aborted. Free up resources or use a more capable machine." -ForegroundColor Yellow
+        Write-Host "  Hardware spec: https://cerberusai.dev/docs#requirements" -ForegroundColor DarkGray
+        exit 2
+    }
+
+    # Soft warnings
+    if ($totalRamGB -lt $REC_RAM_GB) {
+        Write-Warn2 "RAM is below $REC_RAM_GB GB recommended. Cerberus will work but may swap during long contexts."
+    }
+    if (-not $gpu -or $vramGB -lt $REC_VRAM_GB) {
+        Write-Warn2 "No GPU with >=$REC_VRAM_GB GB VRAM detected. Inference will run on CPU at ~3-8 tokens/sec."
+    } else {
+        Write-OK "GPU acceleration available ($($gpu.Name), $vramGB GB VRAM)"
+    }
+    Write-OK "Hardware passes minimum to run $MODEL_SMALLEST"
+}
+
 # ---------- Detect ----------
 function Invoke-Detect {
     $report = [ordered]@{}
@@ -335,6 +451,7 @@ Write-Host "  ReleaseTag: $ReleaseTag" -ForegroundColor DarkGray
 Write-Host "  Silent    : $Silent`n" -ForegroundColor DarkGray
 
 try {
+    Test-MinimumHardware
     Ensure-WebView2
     Ensure-Ollama
     Ensure-Model

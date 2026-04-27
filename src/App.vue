@@ -14,13 +14,13 @@ import type {
 const STORAGE_KEY = "cerberus.chats.v1";
 const MODEL_KEY = "cerberus.model.v1";
 const APIKEY_KEY = "cerberus.apiKey.v1";
-const VERIFY_URL = "https://api.cerberusai.dev/v1/models";
 
 const chats = ref<Chat[]>([]);
 const activeId = ref<string | null>(null);
 const models = ref<OllamaModel[]>([]);
 const selectedModel = ref<string>(localStorage.getItem(MODEL_KEY) || "");
-const status = ref<OllamaStatus>({ kind: "checking" });
+const cloudStatus = ref<OllamaStatus>({ kind: "checking" });
+const localStatus = ref<{ running: boolean; version?: string; error?: string }>({ running: false });
 const hardware = ref<HardwareInfo | null>(null);
 const draft = ref<string>("");
 const streaming = ref<boolean>(false);
@@ -32,6 +32,14 @@ const apiKeyVerified = ref<boolean>(false);
 const apiKeyDraft = ref<string>("");
 const verifying = ref<boolean>(false);
 const verifyError = ref<string>("");
+
+// Suggested Cerberus models that the user can pull on demand
+const SUGGESTED_MODELS = [
+  { tag: "cerberus-4b-v2-abliterated", size: "~2.6 GB", note: "Q4_K_M · runs on most hardware" },
+];
+
+// Active model pull
+const pulling = ref<{ name: string; pct: number; status: string } | null>(null);
 
 const activeChat = computed<Chat | null>(() =>
   chats.value.find((c) => c.id === activeId.value) ?? null
@@ -101,32 +109,37 @@ async function refreshModels() {
     const list = await invoke<OllamaModel[]>("list_models");
     models.value = list;
     if (!selectedModel.value && list.length) {
-      selectedModel.value = pickRecommendedModel(list);
+      const cerberus = list.find((m) => m.name.toLowerCase().includes("cerberus"));
+      selectedModel.value = cerberus?.name ?? list[0]?.name ?? "";
     }
   } catch (e) {
     console.warn("list_models failed", e);
+    models.value = [];
   }
 }
 
-function pickRecommendedModel(list: OllamaModel[]): string {
-  const vram = primaryGpu.value?.vram_mb ?? 0;
-  const cerberus = list.find((m) => m.name.toLowerCase().includes("cerberus"));
-  if (cerberus) return cerberus.name;
-  const sized = [...list].sort((a, b) => a.size - b.size);
-  if (vram > 0 && vram < 8 * 1024) return sized[0]?.name ?? "";
-  return sized[Math.floor(sized.length / 2)]?.name ?? sized[0]?.name ?? "";
+async function checkLocal() {
+  try {
+    localStatus.value = await invoke("check_local_ollama");
+    if (localStatus.value.running) await refreshModels();
+  } catch (e) {
+    localStatus.value = { running: false, error: String(e) };
+  }
 }
 
-async function checkOllama() {
-  status.value = { kind: "checking" };
+async function checkApi() {
+  if (!apiKey.value) {
+    cloudStatus.value = { kind: "missing" };
+    return;
+  }
+  cloudStatus.value = { kind: "checking" };
   try {
-    const version = await invoke<string>("check_ollama");
-    status.value = { kind: "ok", version };
-    await refreshModels();
+    await invoke<string>("check_api", { apiKey: apiKey.value });
+    cloudStatus.value = { kind: "ok", version: "cloud" };
   } catch (e: any) {
     const msg = String(e ?? "unknown");
-    status.value = msg.includes("connection")
-      ? { kind: "missing" }
+    cloudStatus.value = msg.includes("401") || msg.includes("403")
+      ? { kind: "error", message: "Invalid API key" }
       : { kind: "error", message: msg };
   }
 }
@@ -150,19 +163,15 @@ async function verifyKey(key: string): Promise<boolean> {
   verifying.value = true;
   verifyError.value = "";
   try {
-    const r = await fetch(VERIFY_URL, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${key}` },
-    });
-    if (r.status === 200) return true;
-    if (r.status === 401 || r.status === 403) {
-      verifyError.value = "Invalid API key.";
-      return false;
-    }
-    verifyError.value = `Verify failed (HTTP ${r.status}). Try again.`;
-    return false;
+    await invoke<string>("check_api", { apiKey: key });
+    return true;
   } catch (e: any) {
-    verifyError.value = `Network error: ${e?.message ?? e}`;
+    const msg = String(e ?? "unknown");
+    if (msg.includes("401") || msg.includes("403")) {
+      verifyError.value = "Invalid API key.";
+    } else {
+      verifyError.value = `Verify failed: ${msg}`;
+    }
     return false;
   } finally {
     verifying.value = false;
@@ -181,6 +190,8 @@ async function submitKey() {
     apiKeyVerified.value = true;
     localStorage.setItem(APIKEY_KEY, key);
     apiKeyDraft.value = "";
+    // Now that we have a key, connect to the API
+    await checkApi();
   }
 }
 
@@ -200,10 +211,10 @@ async function signOut() {
 async function send() {
   const text = draft.value.trim();
   if (!text || streaming.value || !activeChat.value || !selectedModel.value) return;
-  if (!apiKeyVerified.value) return;
-  if (status.value.kind !== "ok") {
-    await checkOllama();
-    if ((status.value as OllamaStatus).kind !== "ok") return;
+  if (!apiKeyVerified.value || !apiKey.value) return;
+  if (!localStatus.value.running) {
+    await checkLocal();
+    if (!localStatus.value.running) return;
   }
 
   const chat = activeChat.value;
@@ -251,6 +262,39 @@ async function send() {
   }
 }
 
+interface PullProgress {
+  status: string;
+  completed?: number;
+  total?: number;
+  done: boolean;
+  error?: string;
+}
+
+async function pullModel(name: string) {
+  if (pulling.value) return;
+  pulling.value = { name, pct: 0, status: "starting…" };
+  const channel = new Channel<PullProgress>();
+  channel.onmessage = (p) => {
+    const pct = p.total && p.completed ? Math.floor((p.completed / p.total) * 100) : pulling.value?.pct ?? 0;
+    pulling.value = { name, pct, status: p.status || "downloading" };
+    if (p.done) {
+      const failed = !!p.error;
+      pulling.value = null;
+      if (!failed) {
+        refreshModels().then(() => {
+          if (!selectedModel.value) selectedModel.value = name;
+        });
+      }
+    }
+  };
+  try {
+    await invoke("pull_model", { name, onEvent: channel });
+  } catch (e) {
+    pulling.value = { name, pct: 0, status: `error: ${String(e)}` };
+    setTimeout(() => { if (pulling.value?.name === name) pulling.value = null; }, 4000);
+  }
+}
+
 function onComposerKeydown(e: KeyboardEvent) {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -268,7 +312,7 @@ const SUGGESTIONS = [
   "Write a Python script to deduplicate a CSV by column.",
   "Explain abliteration in 4 bullet points.",
   "Draft a system prompt for a no-refusals coding agent.",
-  "Summarize the last commit on this repo.",
+  "Compare Cerberus 4B with Arbiter GL9b for code generation.",
 ];
 
 function useSuggestion(text: string) {
@@ -280,12 +324,15 @@ onMounted(async () => {
   if (apiKey.value) {
     apiKeyVerified.value = await verifyKey(apiKey.value);
     if (!apiKeyVerified.value) {
-      // Stored key is no longer valid — clear it so the gate prompts again.
       localStorage.removeItem(APIKEY_KEY);
       apiKey.value = "";
     }
   }
-  await Promise.all([detectHardware(), checkOllama()]);
+  await Promise.all([
+    detectHardware(),
+    apiKey.value ? checkApi() : Promise.resolve(),
+    checkLocal(),
+  ]);
 });
 </script>
 
@@ -359,25 +406,31 @@ onMounted(async () => {
         <select
           class="model-select"
           v-model="selectedModel"
-          :disabled="status.kind !== 'ok' || models.length === 0"
+          :disabled="!localStatus.running || models.length === 0"
         >
-          <option v-if="models.length === 0" value="">No models found</option>
+          <option v-if="models.length === 0" value="">No models pulled</option>
           <option v-for="m in models" :key="m.name" :value="m.name">
             {{ m.name }}
           </option>
         </select>
 
-        <span v-if="status.kind === 'ok'" class="status-pill ok">
-          <span class="dot"></span> OLLAMA {{ status.version }}
+        <!-- Cloud auth pill -->
+        <span v-if="cloudStatus.kind === 'ok'" class="status-pill ok">
+          <span class="dot"></span> CLOUD AUTH
         </span>
-        <span v-else-if="status.kind === 'checking'" class="status-pill warn">
-          <span class="dot"></span> CHECKING…
-        </span>
-        <span v-else-if="status.kind === 'missing'" class="status-pill err">
-          <span class="dot"></span> OLLAMA OFFLINE
+        <span v-else-if="cloudStatus.kind === 'checking'" class="status-pill warn">
+          <span class="dot"></span> AUTH…
         </span>
         <span v-else class="status-pill err">
-          <span class="dot"></span> ERROR
+          <span class="dot"></span> CLOUD ERR
+        </span>
+
+        <!-- Local Ollama pill -->
+        <span v-if="localStatus.running" class="status-pill ok">
+          <span class="dot"></span> OLLAMA {{ localStatus.version }}
+        </span>
+        <span v-else class="status-pill err" :title="localStatus.error || ''">
+          <span class="dot"></span> OLLAMA OFFLINE
         </span>
 
         <div v-if="hardware" class="hw-summary">
@@ -403,15 +456,24 @@ onMounted(async () => {
     <!-- Main -->
     <main class="main">
       <header class="main-header">
-        <h1 class="glitch" data-text="CERBERUS LOCAL">CERBERUS LOCAL</h1>
+        <h1 class="glitch" data-text="CERBERUS AI">CERBERUS AI</h1>
         <div class="model-tag-display" v-if="selectedModel">
           {{ selectedModel }}
         </div>
       </header>
 
-      <div v-if="status.kind === 'missing'" class="banner">
-        Ollama isn't running. Start it with <code>ollama serve</code> or install it from
+      <div v-if="!localStatus.running" class="banner">
+        Local Ollama isn't running. Start it with <code>ollama serve</code> or install it from
         <a href="https://ollama.com/download/windows" target="_blank" rel="noopener">ollama.com</a>.
+        <button class="banner-retry" @click="checkLocal">Retry</button>
+      </div>
+      <div v-else-if="cloudStatus.kind !== 'ok'" class="banner">
+        Cloud auth check failed. Your API key may have been revoked at
+        <a href="https://access.cerberusai.dev" target="_blank" rel="noopener">access.cerberusai.dev</a>.
+      </div>
+      <div v-else-if="pulling" class="banner pulling">
+        Pulling <code>{{ pulling.name }}</code> · {{ pulling.status }}
+        <span v-if="pulling.pct > 0"> · {{ pulling.pct }}%</span>
       </div>
 
       <div ref="messagesEl" class="messages">
@@ -439,12 +501,31 @@ onMounted(async () => {
 
         <div v-else class="empty">
           <div class="empty-logo">C</div>
-          <h2>Cerberus Local</h2>
+          <h2>Cerberus AI</h2>
           <p>
-            Unfiltered chat that runs on your machine. Pick a model, type a prompt, send.
-            Nothing leaves this computer.
+            Unfiltered. Uncensored. Unbound. Inference runs on your hardware via Ollama;
+            your API key gates access through CerberusAI.
           </p>
-          <div class="suggestions">
+
+          <!-- Model picker if none pulled yet -->
+          <div v-if="localStatus.running && models.length === 0" class="pull-block">
+            <p class="pull-eyebrow">No local models yet — pull one to start</p>
+            <div class="pull-grid">
+              <button
+                v-for="m in SUGGESTED_MODELS"
+                :key="m.tag"
+                class="pull-card"
+                :disabled="!!pulling"
+                @click="pullModel(m.tag)"
+              >
+                <span class="pull-name">{{ m.tag }}</span>
+                <span class="pull-meta">{{ m.size }} · {{ m.note }}</span>
+                <span class="pull-action">{{ pulling?.name === m.tag ? 'Pulling…' : 'Pull' }}</span>
+              </button>
+            </div>
+          </div>
+
+          <div v-else class="suggestions">
             <button
               v-for="s in SUGGESTIONS"
               :key="s"
@@ -466,7 +547,7 @@ onMounted(async () => {
           ></textarea>
           <button
             class="send-btn"
-            :disabled="!draft.trim() || streaming || status.kind !== 'ok' || !selectedModel"
+            :disabled="!draft.trim() || streaming || !localStatus.running || cloudStatus.kind !== 'ok' || !selectedModel"
             @click="send"
             aria-label="Send"
           >
@@ -485,24 +566,31 @@ onMounted(async () => {
 
 <style scoped>
 .model-tag-display {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  background: rgba(255,255,255,0.04);
-  border: 1px solid rgba(255,255,255,0.08);
-  padding: 4px 10px;
+  font-size: 0.68rem;
+  color: var(--text-secondary);
+  background: var(--bg-frost);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--glass-border);
+  padding: 4px 12px;
   border-radius: 50px;
-  letter-spacing: 1px;
+  letter-spacing: 1.5px;
   text-transform: uppercase;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 500;
 }
 
 .hw-summary {
-  margin-top: 0.4rem;
+  margin-top: 0.35rem;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  font-size: 0.72rem;
+  gap: 3px;
+  font-size: 0.68rem;
   color: var(--text-muted);
+  background: var(--bg-frost);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
 }
 .hw-line {
   display: flex;
@@ -512,14 +600,15 @@ onMounted(async () => {
 .hw-label {
   letter-spacing: 1.5px;
   font-weight: 700;
-  color: rgba(255,255,255,0.45);
+  color: var(--red-400);
   text-transform: uppercase;
-  font-size: 0.65rem;
+  font-size: 0.6rem;
+  font-family: 'JetBrains Mono', monospace;
 }
 .hw-val {
-  color: #d8dae0;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 0.72rem;
+  color: var(--text-secondary);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.68rem;
   text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -527,26 +616,28 @@ onMounted(async () => {
 }
 
 .signout-btn {
-  margin-top: 0.4rem;
-  background: transparent;
-  border: 1px solid rgba(255,255,255,0.08);
+  margin-top: 0.35rem;
+  background: var(--bg-frost);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--glass-border);
   color: var(--text-muted);
-  padding: 6px 10px;
-  border-radius: 8px;
-  font-size: 0.7rem;
-  letter-spacing: 1.5px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.65rem;
+  letter-spacing: 2px;
   font-weight: 700;
-  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+  text-transform: uppercase;
+  transition: all 150ms var(--ease-out);
 }
 .signout-btn:hover {
-  color: #fff;
-  border-color: rgba(255, 26, 64, 0.32);
-  background: rgba(255, 26, 64, 0.05);
+  color: var(--red-400);
+  border-color: var(--glass-border-red);
+  background: var(--red-glow-dim);
 }
 
 /* API Key Gate */
 .shell-blocked {
-  filter: blur(8px) brightness(0.4);
+  filter: blur(10px) brightness(0.3);
   pointer-events: none;
   user-select: none;
 }
@@ -559,129 +650,234 @@ onMounted(async () => {
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
-  background: rgba(3, 4, 7, 0.55);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  background: rgba(2, 2, 4, 0.7);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .key-card {
   width: 100%;
-  max-width: 460px;
-  background: var(--bg-elev-1);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--glass-border);
-  border-radius: 20px;
+  max-width: 440px;
+  background: var(--bg-frost-deep);
+  backdrop-filter: blur(var(--frost-blur-heavy));
+  -webkit-backdrop-filter: blur(var(--frost-blur-heavy));
+  border: 1px solid var(--glass-border-red);
+  border-radius: var(--radius-xl);
   padding: 2.5rem 2rem;
   text-align: center;
   box-shadow:
-    0 25px 60px -15px rgba(0,0,0,0.85),
-    0 0 0 1px rgba(255, 26, 64, 0.18),
-    0 0 60px -10px rgba(255, 26, 64, 0.18);
-  animation: gateIn 320ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+    0 30px 80px -20px rgba(0,0,0,0.9),
+    0 0 0 1px rgba(220, 38, 38, 0.12),
+    0 0 80px -20px rgba(220, 38, 38, 0.15);
+  animation: gateIn 350ms var(--ease-spring);
 }
 @keyframes gateIn {
-  from { opacity: 0; transform: translateY(12px) scale(0.97); }
+  from { opacity: 0; transform: translateY(16px) scale(0.96); }
   to   { opacity: 1; transform: none; }
 }
 
 .key-logo {
-  width: 64px; height: 64px;
+  width: 60px; height: 60px;
   margin: 0 auto 1.25rem;
-  border-radius: 16px;
-  background: linear-gradient(135deg, var(--primary), var(--secondary));
+  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, var(--red-600), #8b0000);
   display: flex; align-items: center; justify-content: center;
-  color: #fff; font-weight: 900; font-size: 1.7rem;
-  box-shadow: 0 0 40px rgba(255, 26, 64, 0.55);
-  animation: pulse 3s infinite alternate;
+  color: #fff; font-weight: 900; font-size: 1.6rem;
+  box-shadow: 0 0 40px var(--red-glow);
+  animation: logo-pulse 4s infinite alternate ease-in-out;
+  position: relative;
+}
+.key-logo::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  background: linear-gradient(135deg, var(--red-500), transparent);
+  z-index: -1;
+  opacity: 0.3;
+  filter: blur(1px);
 }
 
 .key-eyebrow {
-  color: var(--primary);
+  color: var(--red-400);
   font-weight: 700;
-  letter-spacing: 2px;
+  letter-spacing: 2.5px;
   text-transform: uppercase;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   margin-bottom: 0.4rem;
 }
 
 .key-title {
-  font-size: 2.4rem !important;
-  letter-spacing: 3px !important;
+  font-size: 2.2rem !important;
+  letter-spacing: 4px !important;
   margin-bottom: 0.6rem !important;
+  color: #fff !important;
 }
 
 .key-sub {
-  color: var(--text-muted);
-  font-size: 0.9rem;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
   line-height: 1.55;
   margin-bottom: 1.6rem;
 }
-.key-sub a { color: var(--primary); }
+.key-sub a { color: var(--red-400); font-weight: 600; }
 
 .key-form {
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 0.55rem;
 }
 
 .key-form input {
-  background: rgba(0,0,0,0.35);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 10px;
+  background: rgba(0,0,0,0.45);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
   padding: 13px 16px;
   color: #fff;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 0.95rem;
-  letter-spacing: 1px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.9rem;
+  letter-spacing: 1.5px;
   text-align: center;
   outline: none;
-  transition: border-color 140ms ease, box-shadow 140ms ease;
+  transition: all 180ms var(--ease-out);
 }
 .key-form input:focus {
-  border-color: rgba(255, 26, 64, 0.5);
-  box-shadow: 0 0 0 3px rgba(255, 26, 64, 0.1);
+  border-color: var(--glass-border-red);
+  box-shadow: 0 0 0 3px var(--red-glow-dim);
 }
 
 .key-form button {
-  border: 1px solid rgba(255, 61, 46, 0.55);
-  background: linear-gradient(135deg, #ff5445 0%, #ff3d2e 55%, #c61f12 100%);
+  border: 1px solid rgba(220, 38, 38, 0.4);
+  background: linear-gradient(135deg, var(--red-600) 0%, #8b0000 100%);
   color: #fff;
   padding: 13px 16px;
-  border-radius: 10px;
-  font-weight: 900;
-  letter-spacing: 2.5px;
-  font-size: 0.85rem;
+  border-radius: var(--radius-md);
+  font-weight: 800;
+  letter-spacing: 3px;
+  font-size: 0.8rem;
   text-transform: uppercase;
-  box-shadow: 0 14px 32px -16px rgba(255, 61, 46, 0.6);
-  transition: transform 120ms ease, filter 120ms ease, opacity 120ms ease;
+  box-shadow: 0 12px 32px -12px var(--red-glow);
+  transition: all 180ms var(--ease-out);
 }
 .key-form button:hover:not(:disabled) {
   transform: translateY(-1px);
-  filter: brightness(1.06);
+  box-shadow: 0 16px 40px -12px var(--red-glow);
+  filter: brightness(1.1);
 }
-.key-form button:disabled { opacity: 0.45; cursor: not-allowed; }
+.key-form button:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .key-error {
   color: var(--err);
-  font-size: 0.82rem;
-  margin-top: 0.8rem;
-  font-weight: 500;
+  font-size: 0.8rem;
+  margin-top: 0.7rem;
+  font-weight: 600;
 }
 
 .key-foot {
-  margin-top: 1.6rem;
-  font-size: 0.72rem;
+  margin-top: 1.5rem;
+  font-size: 0.68rem;
   color: var(--text-muted);
   line-height: 1.55;
 }
 .key-foot code {
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.08);
+  background: var(--bg-frost);
+  border: 1px solid var(--glass-border);
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-secondary);
+  font-size: 0.64rem;
+}
+
+/* Banner retry button */
+.banner-retry {
+  margin-left: 0.6rem;
+  padding: 3px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.04);
+  color: var(--text-primary);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  transition: all 150ms var(--ease-out);
+}
+.banner-retry:hover {
+  border-color: var(--glass-border-red);
+  background: var(--red-glow-dim);
+  color: var(--red-400);
+}
+
+/* Pulling banner variant */
+.banner.pulling {
+  background: rgba(220, 38, 38, 0.05);
+  color: var(--red-400);
+  border-color: var(--glass-border-red);
+}
+.banner.pulling code {
+  background: rgba(0,0,0,0.4);
+  border: 1px solid var(--glass-border);
   padding: 1px 6px;
   border-radius: 4px;
-  font-family: ui-monospace, monospace;
-  color: #fff;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-primary);
+  font-size: 0.78rem;
+}
+
+/* Model pull block in empty state */
+.pull-block {
+  margin-top: 1.5rem;
+}
+.pull-eyebrow {
   font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--red-400);
+  margin-bottom: 0.6rem;
+}
+.pull-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.6rem;
+}
+.pull-card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  background: var(--bg-frost-deep);
+  border: 1px solid var(--glass-border-red);
+  border-radius: var(--radius-md);
+  padding: 0.85rem 1rem;
+  color: var(--text-primary);
+  transition: all 150ms var(--ease-out);
+  position: relative;
+}
+.pull-card:hover:not(:disabled) {
+  border-color: var(--red-500);
+  background: var(--red-glow-dim);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px -10px var(--red-glow);
+}
+.pull-card:disabled { opacity: 0.55; cursor: not-allowed; }
+.pull-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+.pull-meta {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+.pull-action {
+  align-self: flex-start;
+  margin-top: 4px;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: var(--red-400);
+  text-transform: uppercase;
 }
 </style>

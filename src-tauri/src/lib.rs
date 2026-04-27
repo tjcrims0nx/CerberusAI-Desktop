@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use sysinfo::System;
 use tauri::ipc::Channel;
 
-mod ollama;
 mod hardware;
+mod ollama;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -37,26 +37,53 @@ pub struct HardwareInfo {
     pub gpus: Vec<GpuInfo>,
 }
 
+// ─── Cloud (api.cerberusai.dev) ───────────────────────────────────────────
+// Only the API-key gate hits the cloud. Inference stays local.
+
+/// Verify the user's Cerberus API key against api.cerberusai.dev.
 #[tauri::command]
-async fn check_ollama() -> Result<String, String> {
-    ollama::version().await.map_err(|e| e.to_string())
+async fn check_api(api_key: String) -> Result<String, String> {
+    ollama::verify_key(&api_key).await.map_err(|e| e.to_string())
 }
 
+// ─── Local Ollama ─────────────────────────────────────────────────────────
+
+/// Returns local Ollama daemon status (running + version, or error).
+#[tauri::command]
+async fn check_local_ollama() -> ollama::LocalStatus {
+    ollama::local_status().await
+}
+
+/// List models actually pulled into the user's local Ollama.
 #[tauri::command]
 async fn list_models() -> Result<Vec<ollama::ModelInfo>, String> {
-    ollama::list().await.map_err(|e| e.to_string())
+    ollama::list_local().await.map_err(|e| e.to_string())
 }
 
+/// Stream `ollama pull <name>` progress to the frontend.
+#[tauri::command]
+async fn pull_model(
+    name: String,
+    on_event: Channel<ollama::PullProgress>,
+) -> Result<(), String> {
+    ollama::pull_model(name, on_event)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Stream a chat completion from the user's local Ollama.
 #[tauri::command]
 async fn chat_stream(
     model: String,
     messages: Vec<ChatMessage>,
     on_event: Channel<ChatStreamChunk>,
 ) -> Result<(), String> {
-    ollama::stream_chat(model, messages, on_event)
+    ollama::stream_chat_local(model, messages, on_event)
         .await
         .map_err(|e| e.to_string())
 }
+
+// ─── Hardware ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
 fn detect_hardware() -> HardwareInfo {
@@ -85,8 +112,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
-            check_ollama,
+            check_api,
+            check_local_ollama,
             list_models,
+            pull_model,
             chat_stream,
             detect_hardware,
         ])
