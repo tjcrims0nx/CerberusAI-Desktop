@@ -201,12 +201,14 @@ async function checkApi() {
 
 async function checkForUpdate() {
   try {
-    updateInfo.value = await invoke<{ current: string; latest: string; available: boolean }>(
+    const info = await invoke<{ current: string; latest: string; available: boolean }>(
       "check_for_update"
     );
+    updateInfo.value = info;
   } catch (e) {
     console.warn("check_for_update failed", e);
-    updateInfo.value = null;
+    // If it fails, we set a dummy state so the UI doesn't hang in "CHECKING..."
+    updateInfo.value = { current: appVersion.value, latest: "unknown", available: false };
   }
 }
 
