@@ -46,7 +46,7 @@ const pulling = ref<{ name: string; pct: number; status: string } | null>(null);
 // Drives the dropdown so users can pick undownloaded models and have them
 // auto-pulled (LM Studio-style).
 const allModelChoices = computed(() => {
-  const local = new Set(models.value.map((m) => m.name));
+  const local = new Set(models.value.map((m) => m.name.replace(/:latest$/, '')));
   return allowedModels.value.map((m) => ({ 
     name: m.id, 
     downloaded: local.has(m.id),
@@ -120,7 +120,7 @@ function deleteChat(id: string, evt: Event) {
 watch(selectedModel, (v) => {
   // Only persist once the model is actually present locally — otherwise a
   // pending-download choice would be remembered before it ever arrived.
-  if (v && models.value.some((m) => m.name === v)) {
+  if (v && models.value.some((m) => m.name.replace(/:latest$/, '') === v)) {
     localStorage.setItem(MODEL_KEY, v);
   }
 });
@@ -128,7 +128,7 @@ watch(selectedModel, (v) => {
 // LM Studio-style: picking an undownloaded model auto-triggers the pull.
 watch(selectedModel, async (v) => {
   if (!v) return;
-  if (models.value.some((m) => m.name === v)) return;
+  if (models.value.some((m) => m.name.replace(/:latest$/, '') === v)) return;
   if (!allowedModels.value.some((m) => m.id === v)) return;
   if (pulling.value) return;
   await pullModel(v);
@@ -140,9 +140,10 @@ async function refreshAllowedModels() {
     return;
   }
   try {
-    allowedModels.value = await invoke<AllowedModel[]>("list_allowed_models", {
+    const rawModels = await invoke<AllowedModel[]>("list_allowed_models", {
       apiKey: apiKey.value,
     });
+    allowedModels.value = rawModels.filter((m) => m.id !== "cerberus-4b");
   } catch (e) {
     console.warn("list_allowed_models failed", e);
     allowedModels.value = [];
@@ -154,13 +155,13 @@ async function refreshModels() {
     const list = await invoke<OllamaModel[]>("list_models");
     const allowed = new Set(allowedModels.value.map((m) => m.id));
     const filtered = allowed.size > 0
-      ? list.filter((m) => allowed.has(m.name))
+      ? list.filter((m) => allowed.has(m.name.replace(/:latest$/, '')))
       : [];
     models.value = filtered;
 
     if (
       selectedModel.value &&
-      !filtered.find((m) => m.name === selectedModel.value) &&
+      !filtered.find((m) => m.name.replace(/:latest$/, '') === selectedModel.value) &&
       !allowedModels.value.some((m) => m.id === selectedModel.value)
     ) {
       selectedModel.value = "";
@@ -283,7 +284,7 @@ async function send() {
   if (!text || streaming.value || !activeChat.value || !selectedModel.value) return;
   if (!apiKeyVerified.value || !apiKey.value) return;
   if (pulling.value) return;
-  if (!models.value.some((m) => m.name === selectedModel.value)) return;
+  if (!models.value.some((m) => m.name.replace(/:latest$/, '') === selectedModel.value)) return;
   if (!localStatus.value.running) {
     await checkLocal();
     if (!localStatus.value.running) return;
@@ -677,7 +678,7 @@ onMounted(async () => {
           ></textarea>
           <button
             class="send-btn"
-            :disabled="!draft.trim() || streaming || !localStatus.running || cloudStatus.kind !== 'ok' || !selectedModel || !!pulling || !models.some((m) => m.name === selectedModel)"
+            :disabled="!draft.trim() || streaming || !localStatus.running || cloudStatus.kind !== 'ok' || !selectedModel || !!pulling || !models.some((m) => m.name.replace(/:latest$/, '') === selectedModel)"
             @click="send"
             aria-label="Send"
           >
