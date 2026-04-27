@@ -1,55 +1,41 @@
-# Cerberus Desktop
+# Cerberus AI — Local-First Chat Dashboard
 
-Local-first chat dashboard for uncensored language models. Tauri (Rust) + Vue 3.
+![Cerberus UI](file:///C:/Users/tjcri/.gemini/antigravity/brain/b3f02429-5114-47ea-bdd1-f43b176a8bbb/main_chat_interface_1777312310653.png)
 
-Inference runs on the user's machine via [Ollama](https://ollama.com). The app is gated behind a Cerberus API key validated against `https://api.cerberusai.dev/v1/models`.
+Cerberus is a powerful, local-first chat dashboard designed for uncensored and private interactions with language models. It runs entirely on your machine via Ollama, ensuring your data never leaves your local environment.
 
-## Layout
+> [!IMPORTANT]
+> **API Key Required:** An active API key from [cerberusai.dev](https://cerberusai.dev) is **REQUIRED** to utilize this software and unlock the chat interface.
 
-```
-src/                  Vue 3 frontend (single-screen chat dashboard)
-src-tauri/            Rust core
-  src/lib.rs            Tauri commands: check_ollama, list_models, chat_stream, detect_hardware
-  src/ollama.rs         reqwest client → 127.0.0.1:11434, NDJSON streaming
-  src/hardware.rs       DXGI GPU enumeration (Windows)
-  tauri.conf.json       Bundle config (MSI + NSIS, embedded WebView2 bootstrapper)
-  capabilities/         Per-window permission set
-deploy/install.ps1    Windows one-shot installer (WebView2 + Ollama + model + app)
-public/cerberus.svg   Source for the icon set
-```
+## Features
+
+- **Local-First Privacy**: Your chats and data stay on your machine.
+- **Uncensored Models**: Full support for uncensored language models without restrictions.
+- **Dynamic Quantization**: (New in v0.1.2) automatically selects and downloads the smallest available quantization for any given model to optimize performance and disk space.
+- **Direct-GGUF Flow**: Blazingly fast model pulls directly from our high-speed mirrors.
+- **Modern UI**: Sleek, glassmorphic design built with Vue 3 and Tauri.
+
+## Getting Started
+
+1. **Install Ollama**: Ensure [Ollama](https://ollama.com) is installed and running on your machine.
+2. **Get an API Key**: Sign up at [cerberusai.dev](https://cerberusai.dev) to obtain your unique API key.
+3. **Download Cerberus**: Get the latest installer from our [releases page](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
+4. **Unlock and Chat**: Enter your API key in the app and start chatting locally!
 
 ## Development
 
-```powershell
+Cerberus is built using:
+- **Frontend**: Vue 3, Vite, Tailwind CSS (optional)
+- **Backend**: Rust, Tauri
+- **Models**: GGUF via Ollama
+
+To run locally for development:
+```bash
 npm install
-npm run tauri:dev
+npm run dev
 ```
 
-Requires Node 18+, Rust 1.77+, and Microsoft Edge WebView2 Runtime (preinstalled on Win 11).
-
-## Production build
-
-```powershell
+To build for production:
+```bash
 npm run tauri:build
 ```
-
-Outputs an `.msi` and `.exe` (NSIS) under `src-tauri/target/release/bundle/`.
-
-## End-user install
-
-```powershell
-iwr -useb https://cerberusai.dev/install.ps1 | iex
-```
-
-`install.ps1` flags:
-- `-Check` &mdash; detection-only report (WebView2, Ollama, models, GPU)
-- `-Model <tag>` &mdash; override default `qwen2.5:3b` (use `skip` to skip the pull)
-- `-ReleaseTag <tag>` &mdash; pin to a specific GitHub release (default `latest`)
-- `-Silent` &mdash; unattended mode
-
-## Notes
-
-- The bundle config uses `webviewInstallMode: downloadBootstrapper` so the MSI/NSIS installer also pulls WebView2 if missing.
-- API key is verified once on entry, then re-verified on each launch. Sign-out clears the key from `localStorage` and closes the app.
-- Hardware-aware model picking lives in `pickRecommendedModel()` &mdash; biases toward smaller models when detected VRAM is &lt; 8 GB.
-- API gateway must allow CORS from the Tauri origin (`tauri://localhost` on Windows) for the verify call to succeed.
