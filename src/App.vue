@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { invoke, Channel } from "@tauri-apps/api/core";
-import { getCurrentWindow } from "@tauri-apps/api/window";`nimport { getVersion } from "@tauri-apps/api/app";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import type {
   Chat,
   Message,
@@ -128,7 +129,7 @@ watch(selectedModel, (v) => {
 watch(selectedModel, async (v) => {
   if (!v) return;
   if (models.value.some((m) => m.name === v)) return;
-  if (!allowedModels.value.includes(v)) return;
+  if (!allowedModels.value.some((m) => m.id === v)) return;
   if (pulling.value) return;
   await pullModel(v);
 });
@@ -151,7 +152,7 @@ async function refreshAllowedModels() {
 async function refreshModels() {
   try {
     const list = await invoke<OllamaModel[]>("list_models");
-    const allowed = new Set(allowedModels.value);
+    const allowed = new Set(allowedModels.value.map((m) => m.id));
     const filtered = allowed.size > 0
       ? list.filter((m) => allowed.has(m.name))
       : [];
@@ -160,7 +161,7 @@ async function refreshModels() {
     if (
       selectedModel.value &&
       !filtered.find((m) => m.name === selectedModel.value) &&
-      !allowedModels.value.includes(selectedModel.value)
+      !allowedModels.value.some((m) => m.id === selectedModel.value)
     ) {
       selectedModel.value = "";
     }
