@@ -1,0 +1,44 @@
+[package]
+name = "cerberus-desktop"
+version = "0.1.0"
+description = "Cerberus AI — local-first chat dashboard"
+authors = ["CerberusAI"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "cerberus_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+futures-util = "0.3"
+sysinfo = "0.32"
+log = "0.4"
+anyhow = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
