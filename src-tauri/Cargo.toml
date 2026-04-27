@@ -1,6 +1,6 @@
 [package]
 name = "cerberus-desktop"
-version = "0.1.0"
+version = "0.1.2"
 description = "Cerberus AI — local-first chat dashboard"
 authors = ["CerberusAI"]
 edition = "2021"
@@ -18,7 +18,7 @@ tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "fs"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 futures-util = "0.3"
 sysinfo = "0.32"

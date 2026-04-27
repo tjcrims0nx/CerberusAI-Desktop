@@ -14,6 +14,7 @@ use std::time::Duration;
 use tauri::ipc::Channel;
 
 const CLOUD_API_BASE: &str = "https://api.cerberusai.dev";
+const LLM_FILES_BASE: &str = "https://llm.cerberusai.dev";
 const OLLAMA_BASE: &str = "http://127.0.0.1:11434";
 
 fn http() -> Result<reqwest::Client, reqwest::Error> {
@@ -41,6 +42,85 @@ pub async fn verify_key(api_key: &str) -> Result<String, anyhow::Error> {
     } else {
         Err(anyhow::anyhow!("API returned status {}", r.status()))
     }
+}
+
+// ─── Cloud: GitHub release-based update check ──────────────────────────────
+
+const RELEASES_LATEST_URL: &str =
+    "https://api.github.com/repos/tjcrims0nx/CerberusAI-Desktop/releases/latest";
+
+#[derive(Debug, Deserialize)]
+struct GitHubReleaseResp {
+    tag_name: String,
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct UpdateInfo {
+    pub current: String,
+    pub latest: String,
+    pub available: bool,
+}
+
+fn parse_semver(s: &str) -> Vec<u64> {
+    s.trim().trim_start_matches('v')
+        .split(|c: char| c == '.' || c == '-' || c == '+')
+        .filter_map(|p| p.parse::<u64>().ok())
+        .collect()
+}
+
+pub async fn check_update(current: &str) -> Result<UpdateInfo, anyhow::Error> {
+    let c = http()?;
+    let r = c
+        .get(RELEASES_LATEST_URL)
+        .header("User-Agent", "CerberusDesktop")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await?;
+    if !r.status().is_success() {
+        return Err(anyhow::anyhow!("GitHub API returned {}", r.status()));
+    }
+    let body = r.json::<GitHubReleaseResp>().await?;
+    let latest = body.tag_name.trim_start_matches('v').to_string();
+    let available = parse_semver(&latest) > parse_semver(current);
+    Ok(UpdateInfo {
+        current: current.to_string(),
+        latest,
+        available,
+    })
+}
+
+// ─── Cloud: server-side model allowlist ────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct OpenAiModelEntry {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiModelsResp {
+    #[serde(default)]
+    data: Vec<OpenAiModelEntry>,
+}
+
+/// Fetch the OpenAI-style model list from api.cerberusai.dev. The model id
+/// (e.g. `Arbiter-GL9b`) is also the directory name on llm.cerberusai.dev
+/// and the name we'll use for the local Ollama model.
+pub async fn list_allowed(api_key: &str) -> Result<Vec<String>, anyhow::Error> {
+    let c = http()?;
+    let r = c
+        .get(format!("{CLOUD_API_BASE}/v1/models"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await?;
+    if !r.status().is_success() {
+        let status = r.status();
+        if status.as_u16() == 401 || status.as_u16() == 403 {
+            return Err(anyhow::anyhow!("invalid API key (HTTP {status})"));
+        }
+        return Err(anyhow::anyhow!("models API returned status {status}"));
+    }
+    let body = r.json::<OpenAiModelsResp>().await?;
+    Ok(body.data.into_iter().map(|m| m.id).collect())
 }
 
 // ─── Local Ollama: status + model management ──────────────────────────────
@@ -118,14 +198,17 @@ pub async fn list_local() -> Result<Vec<ModelInfo>, anyhow::Error> {
     Ok(r.models)
 }
 
-#[derive(Serialize)]
-struct PullReq<'a> {
-    name: &'a str,
-    stream: bool,
+#[derive(Deserialize)]
+struct DirEntry {
+    name: String,
+    #[serde(default)]
+    size: u64,
+    #[serde(default, rename = "type")]
+    kind: String,
 }
 
 #[derive(Deserialize)]
-struct PullStatus {
+struct OllamaStatusLine {
     #[serde(default)]
     status: String,
     #[serde(default)]
@@ -134,6 +217,13 @@ struct PullStatus {
     total: Option<u64>,
     #[serde(default)]
     error: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CreateReq<'a> {
+    name: &'a str,
+    modelfile: &'a str,
+    stream: bool,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -146,32 +236,105 @@ pub struct PullProgress {
     pub error: Option<String>,
 }
 
-/// Stream `ollama pull <name>` progress to the frontend.
+/// Download the smallest GGUF for `name` from llm.cerberusai.dev and import
+/// it into the user's local Ollama via `/api/create`. Progress is streamed
+/// to `out`: byte-progress during download, then status messages from
+/// Ollama while the model is imported.
 pub async fn pull_model(
     name: String,
     out: Channel<PullProgress>,
 ) -> Result<(), anyhow::Error> {
+    use tokio::io::AsyncWriteExt;
+
     let c = http()?;
-    let body = PullReq { name: &name, stream: true };
+
+    // 1. Pick the smallest .gguf in the model's directory.
+    let _ = out.send(PullProgress {
+        status: "looking up model".into(),
+        completed: None, total: None, done: false, error: None,
+    });
+    let listing_url = format!("{LLM_FILES_BASE}/api/models/{name}/");
+    let resp = c.get(&listing_url).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let _ = out.send(PullProgress {
+            status: format!("error: listing returned {status}"),
+            completed: None, total: None, done: true,
+            error: Some(format!("HTTP {status}")),
+        });
+        return Err(anyhow::anyhow!("listing HTTP {status}"));
+    }
+    let entries = resp.json::<Vec<DirEntry>>().await?;
+    let chosen = entries
+        .into_iter()
+        .filter(|e| e.kind == "file" && e.name.ends_with(".gguf"))
+        .min_by_key(|e| e.size)
+        .ok_or_else(|| anyhow::anyhow!("no .gguf found for {name}"))?;
+
+    let total = chosen.size;
+    let url = format!("{LLM_FILES_BASE}/models/{name}/{}", chosen.name);
+
+    // 2. Stream the GGUF to a temp file with progress events.
+    let safe_name = name.replace(['/', '\\', ':'], "_");
+    let temp_path = std::env::temp_dir().join(format!("cerberus-{safe_name}-{}", chosen.name));
+    let resp = c.get(&url).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let _ = out.send(PullProgress {
+            status: format!("error: download returned {status}"),
+            completed: None, total: None, done: true,
+            error: Some(format!("HTTP {status}")),
+        });
+        return Err(anyhow::anyhow!("download HTTP {status}"));
+    }
+    let mut stream = resp.bytes_stream();
+    let mut file = tokio::fs::File::create(&temp_path).await?;
+    let mut completed: u64 = 0;
+    let mut last_emit: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk?;
+        completed += bytes.len() as u64;
+        file.write_all(&bytes).await?;
+        // Throttle progress emits to ~1 MB to avoid IPC chatter.
+        if completed - last_emit >= 1024 * 1024 || completed == total {
+            let _ = out.send(PullProgress {
+                status: "downloading".into(),
+                completed: Some(completed),
+                total: Some(total),
+                done: false, error: None,
+            });
+            last_emit = completed;
+        }
+    }
+    file.flush().await?;
+    drop(file);
+
+    // 3. Hand the GGUF to local Ollama via /api/create.
+    let _ = out.send(PullProgress {
+        status: "importing into ollama".into(),
+        completed: None, total: None, done: false, error: None,
+    });
+    let modelfile = format!("FROM {}", temp_path.display());
+    let body = CreateReq { name: &name, modelfile: &modelfile, stream: true };
     let resp = c
-        .post(format!("{OLLAMA_BASE}/api/pull"))
+        .post(format!("{OLLAMA_BASE}/api/create"))
         .json(&body)
         .send()
         .await?;
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
+        let _ = tokio::fs::remove_file(&temp_path).await;
         let _ = out.send(PullProgress {
             status: format!("error: ollama returned {status}: {text}"),
             completed: None, total: None, done: true,
             error: Some(format!("HTTP {status}")),
         });
-        return Err(anyhow::anyhow!("ollama pull HTTP {status}"));
+        return Err(anyhow::anyhow!("ollama create HTTP {status}"));
     }
 
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
-
     while let Some(chunk) = stream.next().await {
         let bytes = chunk?;
         buf.extend_from_slice(&bytes);
@@ -180,25 +343,29 @@ pub async fn pull_model(
             let line: Vec<u8> = buf.drain(..=nl).collect();
             let line = &line[..line.len().saturating_sub(1)];
             if line.is_empty() { continue; }
-            match serde_json::from_slice::<PullStatus>(line) {
+            match serde_json::from_slice::<OllamaStatusLine>(line) {
                 Ok(p) => {
-                    let done = p.status == "success" || p.error.is_some();
+                    let done_now = p.status == "success" || p.error.is_some();
                     let _ = out.send(PullProgress {
                         status: p.status,
                         completed: p.completed,
                         total: p.total,
-                        done,
+                        done: done_now,
                         error: p.error,
                     });
-                    if done { return Ok(()); }
+                    if done_now {
+                        let _ = tokio::fs::remove_file(&temp_path).await;
+                        return Ok(());
+                    }
                 }
-                Err(e) => log::warn!("ollama pull: skipping unparseable line: {e}"),
+                Err(e) => log::warn!("ollama create: skipping unparseable line: {e}"),
             }
         }
     }
 
+    let _ = tokio::fs::remove_file(&temp_path).await;
     let _ = out.send(PullProgress {
-        status: "complete".into(),
+        status: "success".into(),
         completed: None, total: None, done: true, error: None,
     });
     Ok(())

@@ -1,0 +1,92 @@
+server {
+    server_name llm.cerberusai.dev;
+    root /var/www/llm.cerberusai.dev;
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+    add_header Access-Control-Allow-Origin * always;
+    add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
+    add_header Access-Control-Allow-Headers "Range, Content-Type, Authorization" always;
+
+    location = / {
+        index index.html;
+    }
+
+    location /models/ {
+        limit_req zone=general_limit burst=5 nodelay;
+        autoindex on;
+        autoindex_exact_size on;
+        autoindex_format json;
+        sendfile on;
+        tcp_nopush on;
+        tcp_nodelay on;
+        max_ranges 1;
+        send_timeout 3600s;
+        keepalive_timeout 3600s;
+
+        types {
+            application/octet-stream gguf;
+        }
+
+        if ($request_filename ~* \.gguf$) {
+            add_header Content-Disposition "attachment";
+            add_header Access-Control-Allow-Origin *;
+        }
+
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin *;
+            add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS";
+            add_header Access-Control-Allow-Headers "Range, Content-Type";
+            add_header Content-Length 0;
+            return 204;
+        }
+    }
+
+    location = /api/models {
+        return 301 /api/models/;
+    }
+
+    location /api/models/ {
+        alias /var/www/llm.cerberusai.dev/models/;
+        autoindex on;
+        autoindex_format json;
+        autoindex_exact_size on;
+        add_header Content-Type application/json always;
+        add_header Access-Control-Allow-Origin * always;
+        add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Range, Content-Type, Authorization" always;
+
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin * always;
+            add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
+            add_header Access-Control-Allow-Headers "Range, Content-Type, Authorization" always;
+            add_header Content-Length 0;
+            return 204;
+        }
+    }
+
+    location /health {
+        add_header Content-Type application/json always;
+        add_header Access-Control-Allow-Origin * always;
+        add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
+        add_header Access-Control-Allow-Headers "Range, Content-Type, Authorization" always;
+        return 200 '{"status":"ok"}\n';
+    }
+
+    listen 443 ssl;
+    ssl_certificate /etc/letsencrypt/live/llm.cerberusai.dev/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/llm.cerberusai.dev/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+}
+
+server {
+    if ($host = llm.cerberusai.dev) {
+        return 301 https://$host$request_uri;
+    }
+    listen 80;
+    server_name llm.cerberusai.dev;
+    return 404;
+}

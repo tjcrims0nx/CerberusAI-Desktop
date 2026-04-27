@@ -688,9 +688,6 @@ onMounted(async () => {
   opacity: 0.5;
   cursor: not-allowed;
 }
-  border-color: var(--glass-border-red);
-  background: var(--red-glow-dim);
-}
 
 /* API Key Gate */
 .shell-blocked {
