@@ -14,7 +14,6 @@ use std::time::Duration;
 use tauri::ipc::Channel;
 
 const CLOUD_API_BASE: &str = "https://api.cerberusai.dev";
-const LLM_API_BASE: &str = "https://llm.cerberusai.dev";
 pub const REGISTRY_HOST: &str = "registry.cerberusai.dev";
 const REGISTRY_DEFAULT_NAMESPACE: &str = "library";
 const OLLAMA_BASE: &str = "http://127.0.0.1:11434";
@@ -125,7 +124,7 @@ struct OpenAiModelsResp {
 pub async fn list_allowed(api_key: &str) -> Result<Vec<String>, anyhow::Error> {
     let c = http()?;
     let r = c
-        .get(format!("{LLM_API_BASE}/v1/models"))
+        .get(format!("{CLOUD_API_BASE}/v1/models"))
         .header("Authorization", format!("Bearer {api_key}"))
         .send()
         .await?;
@@ -134,7 +133,7 @@ pub async fn list_allowed(api_key: &str) -> Result<Vec<String>, anyhow::Error> {
         if status.as_u16() == 401 || status.as_u16() == 403 {
             return Err(anyhow::anyhow!("invalid API key (HTTP {status})"));
         }
-        return Err(anyhow::anyhow!("llm API returned status {status}"));
+        return Err(anyhow::anyhow!("models API returned status {status}"));
     }
     let body = r.json::<OpenAiModelsResp>().await?;
     Ok(body.data.into_iter().map(|m| qualify_model_id(&m.id)).collect())
