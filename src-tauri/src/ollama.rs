@@ -266,7 +266,9 @@ pub async fn pull_model(
     name: String,
     out: Channel<PullProgress>,
 ) -> Result<(), anyhow::Error> {
-    use tokio::io::AsyncWriteExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
     let c = http()?;
 
@@ -296,40 +298,99 @@ pub async fn pull_model(
     let total = chosen.size;
     let url = format!("{LLM_FILES_BASE}/models/{name}/{}", chosen.name);
 
-    // 2. Stream the GGUF to a temp file with progress events.
+    // 2. Parallel chunked download — 8 simultaneous connections.
     let safe_name = name.replace(['/', '\\', ':'], "_");
     let temp_path = std::env::temp_dir().join(format!("cerberus-{safe_name}-{}", chosen.name));
-    let resp = c.get(&url).send().await?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let _ = out.send(PullProgress {
-            status: format!("error: download returned {status}"),
-            completed: None, total: None, done: true,
-            error: Some(format!("HTTP {status}")),
-        });
-        return Err(anyhow::anyhow!("download HTTP {status}"));
+
+    // Pre-allocate the file so all workers can seek+write concurrently.
+    {
+        let f = tokio::fs::OpenOptions::new()
+            .write(true).create(true).truncate(true)
+            .open(&temp_path).await?;
+        f.set_len(total).await?;
     }
-    let mut stream = resp.bytes_stream();
-    let mut file = tokio::fs::File::create(&temp_path).await?;
-    let mut completed: u64 = 0;
-    let mut last_emit: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        completed += bytes.len() as u64;
-        file.write_all(&bytes).await?;
-        // Throttle progress emits to ~1 MB to avoid IPC chatter.
-        if completed - last_emit >= 1024 * 1024 || completed == total {
-            let _ = out.send(PullProgress {
-                status: "downloading".into(),
-                completed: Some(completed),
-                total: Some(total),
-                done: false, error: None,
-            });
-            last_emit = completed;
+
+    const CHUNKS: u64 = 8;
+    let chunk_size = (total + CHUNKS - 1) / CHUNKS;
+    let completed = Arc::new(AtomicU64::new(0));
+    let mut handles: Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>> = Vec::new();
+
+    for i in 0..CHUNKS {
+        let byte_start = i * chunk_size;
+        if byte_start >= total { break; }
+        let byte_end = ((i + 1) * chunk_size).min(total) - 1;
+        let dl_url = url.clone();
+        let dl_path = temp_path.clone();
+        let dl_done = completed.clone();
+
+        handles.push(tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .connect_timeout(Duration::from_secs(15))
+                .timeout(Duration::from_secs(3600))
+                .build()?;
+            let resp = client
+                .get(&dl_url)
+                .header("Range", format!("bytes={byte_start}-{byte_end}"))
+                .send()
+                .await?;
+            let status = resp.status();
+            // 206 Partial Content is the success code for range requests.
+            if status.as_u16() != 206 && !status.is_success() {
+                return Err(anyhow::anyhow!("chunk {i} HTTP {status}"));
+            }
+            let mut stream = resp.bytes_stream();
+            // Each task opens its own file handle so seeks don't interfere.
+            let mut f = tokio::fs::OpenOptions::new()
+                .write(true).open(&dl_path).await?;
+            f.seek(std::io::SeekFrom::Start(byte_start)).await?;
+            while let Some(chunk) = stream.next().await {
+                let bytes = chunk?;
+                dl_done.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                f.write_all(&bytes).await?;
+            }
+            f.flush().await?;
+            Ok(())
+        }));
+    }
+
+    // Report progress every 500 ms until all chunks finish.
+    loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let current = completed.load(Ordering::Relaxed);
+        let _ = out.send(PullProgress {
+            status: "downloading".into(),
+            completed: Some(current),
+            total: Some(total),
+            done: false, error: None,
+        });
+        if handles.iter().all(|h| h.is_finished()) { break; }
+    }
+
+    let mut errors: Vec<String> = Vec::new();
+    for h in handles {
+        match h.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => errors.push(e.to_string()),
+            Err(e) => errors.push(format!("task panic: {e}")),
         }
     }
-    file.flush().await?;
-    drop(file);
+    if !errors.is_empty() {
+        let msg = errors.join("; ");
+        let _ = tokio::fs::remove_file(&temp_path).await;
+        let _ = out.send(PullProgress {
+            status: format!("error: {msg}"),
+            completed: None, total: None, done: true,
+            error: Some(msg.clone()),
+        });
+        return Err(anyhow::anyhow!("download errors: {msg}"));
+    }
+
+    let _ = out.send(PullProgress {
+        status: "downloading".into(),
+        completed: Some(total),
+        total: Some(total),
+        done: false, error: None,
+    });
 
     // 3. Hand the GGUF to local Ollama via /api/create.
     let _ = out.send(PullProgress {
