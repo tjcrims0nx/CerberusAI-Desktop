@@ -125,7 +125,7 @@ fn detect_hardware() -> HardwareInfo {
         .first()
         .map(|c| c.brand().trim().to_string())
         .unwrap_or_else(|| "Unknown CPU".into());
-    let cpu_cores = sys.physical_core_count().unwrap_or(sys.cpus().len());
+    let cpu_cores = System::physical_core_count().unwrap_or(sys.cpus().len());
 
     HardwareInfo {
         os: System::name().unwrap_or_else(|| "unknown".into()),
