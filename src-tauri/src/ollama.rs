@@ -316,6 +316,14 @@ pub async fn pull_model(
     let completed = Arc::new(AtomicU64::new(0));
     let mut handles: Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>> = Vec::new();
 
+    // One shared client so all 8 workers reuse TLS sessions and the connection pool.
+    let chunk_client = Arc::new(
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(3600))
+            .build()?
+    );
+
     for i in 0..CHUNKS {
         let byte_start = i * chunk_size;
         if byte_start >= total { break; }
@@ -324,12 +332,9 @@ pub async fn pull_model(
         let dl_path = temp_path.clone();
         let dl_done = completed.clone();
         let mut dl_cancel = cancel.clone();
+        let client = chunk_client.clone();
 
         handles.push(tokio::spawn(async move {
-            let client = reqwest::Client::builder()
-                .connect_timeout(Duration::from_secs(15))
-                .timeout(Duration::from_secs(3600))
-                .build()?;
             let resp = client
                 .get(&dl_url)
                 .header("Range", format!("bytes={byte_start}-{byte_end}"))
@@ -369,6 +374,7 @@ pub async fn pull_model(
     }
 
     // Report progress every 500 ms; stop on cancel or when all chunks finish.
+    let mut cancelled = false;
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(500)) => {
@@ -382,12 +388,16 @@ pub async fn pull_model(
                 if handles.iter().all(|h| h.is_finished()) { break; }
             }
             _ = cancel.changed() => {
-                if *cancel.borrow() { break; }
+                if *cancel.borrow() {
+                    // Only treat as cancelled if chunks are still running.
+                    // If all finished before this signal arrived, let the
+                    // normal completion path handle the result.
+                    cancelled = !handles.iter().all(|h| h.is_finished());
+                    break;
+                }
             }
         }
     }
-
-    let cancelled = *cancel.borrow();
     let mut errors: Vec<String> = Vec::new();
     for h in &handles { h.abort(); }
     for h in handles {
