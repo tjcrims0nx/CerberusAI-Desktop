@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
 use tauri::ipc::Channel;
+use tokio::sync::{watch, Mutex};
 
 mod hardware;
 mod ollama;
@@ -75,15 +76,29 @@ async fn list_models() -> Result<Vec<ollama::ModelInfo>, String> {
     ollama::list_local().await.map_err(|e| e.to_string())
 }
 
+struct PullState(Mutex<Option<watch::Sender<bool>>>);
+
 /// Stream `ollama pull <name>` progress to the frontend.
 #[tauri::command]
 async fn pull_model(
     name: String,
     on_event: Channel<ollama::PullProgress>,
+    state: tauri::State<'_, PullState>,
 ) -> Result<(), String> {
-    ollama::pull_model(name, on_event)
-        .await
-        .map_err(|e| e.to_string())
+    let (tx, rx) = watch::channel(false);
+    *state.0.lock().await = Some(tx);
+    let result = ollama::pull_model(name, on_event, rx).await;
+    *state.0.lock().await = None;
+    result.map_err(|e| e.to_string())
+}
+
+/// Cancel an in-progress model download.
+#[tauri::command]
+async fn cancel_pull(state: tauri::State<'_, PullState>) -> Result<(), String> {
+    if let Some(tx) = state.0.lock().await.take() {
+        let _ = tx.send(true);
+    }
+    Ok(())
 }
 
 /// Stream a chat completion from the user's local Ollama.
@@ -148,8 +163,21 @@ async fn update_app(force: Option<bool>) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Remove any stale temp files left by interrupted downloads.
+    let tmp = std::env::temp_dir();
+    if let Ok(entries) = std::fs::read_dir(&tmp) {
+        for entry in entries.flatten() {
+            let n = entry.file_name();
+            let s = n.to_string_lossy();
+            if s.starts_with("cerberus-") && s.ends_with(".gguf") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(PullState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             check_api,
             list_allowed_models,
@@ -157,6 +185,7 @@ pub fn run() {
             check_local_ollama,
             list_models,
             pull_model,
+            cancel_pull,
             chat_stream,
             detect_hardware,
             update_app,

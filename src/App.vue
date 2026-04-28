@@ -343,6 +343,11 @@ interface PullProgress {
   error?: string;
 }
 
+async function cancelDownload() {
+  await invoke("cancel_pull").catch(() => {});
+  pulling.value = null;
+}
+
 async function pullModel(name: string) {
   if (pulling.value) return;
   pulling.value = { name, pct: 0, status: "starting…" };
@@ -478,6 +483,7 @@ onMounted(async () => {
       <code class="download-bar-name" :title="pulling.name">{{ pulling.name }}</code>
       <span class="download-bar-status">{{ pulling.status }}</span>
       <span class="download-bar-pct">{{ pulling.pct }}%</span>
+      <button class="download-bar-cancel" title="Cancel download" @click="cancelDownload">✕</button>
     </div>
   </div>
 
@@ -1060,10 +1066,31 @@ onMounted(async () => {
   text-overflow: ellipsis;
 }
 .download-bar-pct {
-  margin-left: auto;
   font-weight: 800;
   letter-spacing: 1px;
   flex-shrink: 0;
+}
+.download-bar-cancel {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.7);
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  cursor: pointer;
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 150ms, color 150ms;
+}
+.download-bar-cancel:hover {
+  background: rgba(255, 60, 60, 0.35);
+  color: #fff;
+  border-color: rgba(255, 80, 80, 0.6);
 }
 .shell-with-progress {
   padding-top: 36px;

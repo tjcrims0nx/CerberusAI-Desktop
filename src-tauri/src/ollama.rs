@@ -265,6 +265,7 @@ pub struct PullProgress {
 pub async fn pull_model(
     name: String,
     out: Channel<PullProgress>,
+    mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), anyhow::Error> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -322,6 +323,7 @@ pub async fn pull_model(
         let dl_url = url.clone();
         let dl_path = temp_path.clone();
         let dl_done = completed.clone();
+        let mut dl_cancel = cancel.clone();
 
         handles.push(tokio::spawn(async move {
             let client = reqwest::Client::builder()
@@ -334,49 +336,79 @@ pub async fn pull_model(
                 .send()
                 .await?;
             let status = resp.status();
-            // 206 Partial Content is the success code for range requests.
             if status.as_u16() != 206 && !status.is_success() {
                 return Err(anyhow::anyhow!("chunk {i} HTTP {status}"));
             }
             let mut stream = resp.bytes_stream();
-            // Each task opens its own file handle so seeks don't interfere.
             let mut f = tokio::fs::OpenOptions::new()
                 .write(true).open(&dl_path).await?;
             f.seek(std::io::SeekFrom::Start(byte_start)).await?;
-            while let Some(chunk) = stream.next().await {
-                let bytes = chunk?;
-                dl_done.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-                f.write_all(&bytes).await?;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = dl_cancel.changed() => {
+                        if *dl_cancel.borrow() {
+                            return Err(anyhow::anyhow!("cancelled"));
+                        }
+                    }
+                    chunk = stream.next() => {
+                        match chunk {
+                            None => break,
+                            Some(Err(e)) => return Err(e.into()),
+                            Some(Ok(bytes)) => {
+                                dl_done.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                                f.write_all(&bytes).await?;
+                            }
+                        }
+                    }
+                }
             }
             f.flush().await?;
             Ok(())
         }));
     }
 
-    // Report progress every 500 ms until all chunks finish.
+    // Report progress every 500 ms; stop on cancel or when all chunks finish.
     loop {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let current = completed.load(Ordering::Relaxed);
-        let _ = out.send(PullProgress {
-            status: "downloading".into(),
-            completed: Some(current),
-            total: Some(total),
-            done: false, error: None,
-        });
-        if handles.iter().all(|h| h.is_finished()) { break; }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                let current = completed.load(Ordering::Relaxed);
+                let _ = out.send(PullProgress {
+                    status: "downloading".into(),
+                    completed: Some(current),
+                    total: Some(total),
+                    done: false, error: None,
+                });
+                if handles.iter().all(|h| h.is_finished()) { break; }
+            }
+            _ = cancel.changed() => {
+                if *cancel.borrow() { break; }
+            }
+        }
     }
 
+    let cancelled = *cancel.borrow();
     let mut errors: Vec<String> = Vec::new();
+    for h in &handles { h.abort(); }
     for h in handles {
         match h.await {
             Ok(Ok(())) => {}
+            Ok(Err(e)) if e.to_string() == "cancelled" => {}
             Ok(Err(e)) => errors.push(e.to_string()),
-            Err(e) => errors.push(format!("task panic: {e}")),
+            Err(_) => {} // aborted or panicked — ignore
         }
     }
-    if !errors.is_empty() {
-        let msg = errors.join("; ");
+
+    if cancelled || !errors.is_empty() {
         let _ = tokio::fs::remove_file(&temp_path).await;
+        if cancelled {
+            let _ = out.send(PullProgress {
+                status: "cancelled".into(),
+                completed: None, total: None, done: true, error: None,
+            });
+            return Ok(());
+        }
+        let msg = errors.join("; ");
         let _ = out.send(PullProgress {
             status: format!("error: {msg}"),
             completed: None, total: None, done: true,
