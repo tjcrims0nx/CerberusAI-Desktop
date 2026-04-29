@@ -57,3 +57,8 @@ export type OllamaStatus =
   | { kind: "ok"; version: string }
   | { kind: "missing" }
   | { kind: "error"; message: string };
+
+export interface GgufFile {
+  name: string;
+  size: number;
+}

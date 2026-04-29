@@ -1,7 +1,7 @@
 {
   "name": "cerberus-desktop",
   "private": true,
-  "version": "0.1.9",
+  "version": "0.2.0",
   "type": "module",
   "description": "Cerberus AI — local-first chat dashboard for uncensored language models",
   "scripts": {
@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-dialog": "^2.7.0",
     "@tauri-apps/plugin-shell": "^2.0.1",
     "vue": "^3.5.13"
   },

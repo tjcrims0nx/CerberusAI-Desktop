@@ -229,24 +229,7 @@ struct DirEntry {
     kind: String,
 }
 
-#[derive(Deserialize)]
-struct OllamaStatusLine {
-    #[serde(default)]
-    status: String,
-    #[serde(default)]
-    completed: Option<u64>,
-    #[serde(default)]
-    total: Option<u64>,
-    #[serde(default)]
-    error: Option<String>,
-}
 
-#[derive(Serialize)]
-struct CreateReq<'a> {
-    name: &'a str,
-    modelfile: &'a str,
-    stream: bool,
-}
 
 #[derive(Debug, Serialize, Clone)]
 pub struct PullProgress {
@@ -301,7 +284,14 @@ pub async fn pull_model(
 
     // 2. Parallel chunked download — 8 simultaneous connections.
     let safe_name = name.replace(['/', '\\', ':'], "_");
-    let temp_path = std::env::temp_dir().join(format!("cerberus-{safe_name}-{}", chosen.name));
+    
+    let exe_dir = std::env::current_exe()
+        .map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_path_buf())
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let models_dir = exe_dir.join("models");
+    let _ = tokio::fs::create_dir_all(&models_dir).await;
+    
+    let temp_path = models_dir.join(format!("{safe_name}-{}", chosen.name));
 
     // Pre-allocate the file so all workers can seek+write concurrently.
     {
@@ -434,61 +424,71 @@ pub async fn pull_model(
         done: false, error: None,
     });
 
-    // 3. Hand the GGUF to local Ollama via /api/create.
+    // 3. Hand the GGUF to local Ollama via the CLI `ollama create` command.
     let _ = out.send(PullProgress {
-        status: "importing into ollama".into(),
+        status: "importing into ollama (this may take a minute)...".into(),
         completed: None, total: None, done: false, error: None,
     });
-    let modelfile = format!("FROM {}", temp_path.display());
-    let body = CreateReq { name: &name, modelfile: &modelfile, stream: true };
-    let resp = c
-        .post(format!("{OLLAMA_BASE}/api/create"))
-        .json(&body)
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        let _ = tokio::fs::remove_file(&temp_path).await;
+    
+    let modelfile_path = temp_path.with_extension("Modelfile");
+    let path_str = temp_path.to_string_lossy().replace('\\', "/");
+    
+    // Inject ChatML template to ensure all imported models properly understand history
+    let modelfile_content = format!(
+        "FROM \"{}\"\n\
+         TEMPLATE \"\"\"{{{{ if .System }}}}<|im_start|>system\n\
+         {{{{ .System }}}}<|im_end|>\n\
+         {{{{ end }}}}{{{{ range .Messages }}}}<|im_start|>{{{{ .Role }}}}\n\
+         {{{{ .Content }}}}<|im_end|>\n\
+         {{{{ end }}}}<|im_start|>assistant\n\
+         \"\"\"\n\
+         PARAMETER stop \"<|im_start|>\"\n\
+         PARAMETER stop \"<|im_end|>\"\n",
+        path_str
+    );
+    
+    if let Err(e) = tokio::fs::write(&modelfile_path, modelfile_content).await {
+        let msg = format!("failed to write Modelfile: {e}");
         let _ = out.send(PullProgress {
-            status: format!("error: ollama returned {status}: {text}"),
-            completed: None, total: None, done: true,
-            error: Some(format!("HTTP {status}")),
+            status: format!("error: {msg}"),
+            completed: None, total: None, done: true, error: Some(msg.clone()),
         });
-        return Err(anyhow::anyhow!("ollama create HTTP {status}"));
+        return Err(anyhow::anyhow!(msg));
     }
 
-    let mut stream = resp.bytes_stream();
-    let mut buf: Vec<u8> = Vec::with_capacity(4096);
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        buf.extend_from_slice(&bytes);
-        loop {
-            let Some(nl) = buf.iter().position(|b| *b == b'\n') else { break };
-            let line: Vec<u8> = buf.drain(..=nl).collect();
-            let line = &line[..line.len().saturating_sub(1)];
-            if line.is_empty() { continue; }
-            match serde_json::from_slice::<OllamaStatusLine>(line) {
-                Ok(p) => {
-                    let done_now = p.status == "success" || p.error.is_some();
-                    let _ = out.send(PullProgress {
-                        status: p.status,
-                        completed: p.completed,
-                        total: p.total,
-                        done: done_now,
-                        error: p.error,
-                    });
-                    if done_now {
-                        let _ = tokio::fs::remove_file(&temp_path).await;
-                        return Ok(());
-                    }
-                }
-                Err(e) => log::warn!("ollama create: skipping unparseable line: {e}"),
-            }
+    let mut child = match tokio::process::Command::new("ollama")
+        .arg("create")
+        .arg(&name)
+        .arg("-f")
+        .arg(&modelfile_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn() 
+    {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&modelfile_path).await;
+            let msg = format!("Failed to start `ollama` CLI: {e}. Is Ollama in your PATH?");
+            let _ = out.send(PullProgress {
+                status: format!("error: {}", msg),
+                completed: None, total: None, done: true, error: Some(msg.clone()),
+            });
+            return Err(anyhow::anyhow!(msg));
         }
+    };
+
+    let status = child.wait().await?;
+    let _ = tokio::fs::remove_file(&modelfile_path).await;
+
+    if !status.success() {
+        let msg = format!("ollama create failed with status {status}");
+        let _ = out.send(PullProgress {
+            status: format!("error: {}", msg),
+            completed: None, total: None, done: true, error: Some(msg.clone()),
+        });
+        return Err(anyhow::anyhow!(msg));
     }
 
-    let _ = tokio::fs::remove_file(&temp_path).await;
     let _ = out.send(PullProgress {
         status: "success".into(),
         completed: None, total: None, done: true, error: None,
@@ -499,10 +499,18 @@ pub async fn pull_model(
 // ─── Local Ollama: chat streaming ─────────────────────────────────────────
 
 #[derive(Serialize)]
+struct LocalChatOptions {
+    num_ctx: u32,
+    num_predict: u32,
+}
+
+#[derive(Serialize)]
 struct LocalChatReq<'a> {
     model: &'a str,
     messages: &'a [ChatMessage],
     stream: bool,
+    options: LocalChatOptions,
+    keep_alive: &'a str,
 }
 
 #[derive(Deserialize)]
@@ -529,7 +537,13 @@ pub async fn stream_chat_local(
     out: Channel<ChatStreamChunk>,
 ) -> Result<(), anyhow::Error> {
     let c = http()?;
-    let body = LocalChatReq { model: &model, messages: &messages, stream: true };
+    let body = LocalChatReq { 
+        model: &model, 
+        messages: &messages, 
+        stream: true,
+        options: LocalChatOptions { num_ctx: 4096, num_predict: 2048 },
+        keep_alive: "10m",
+    };
 
     let resp = c
         .post(format!("{OLLAMA_BASE}/api/chat"))
@@ -565,29 +579,53 @@ pub async fn stream_chat_local(
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
 
-    while let Some(chunk) = stream.next().await {
-        let bytes = chunk?;
-        buf.extend_from_slice(&bytes);
-        loop {
-            let Some(nl) = buf.iter().position(|b| *b == b'\n') else { break };
-            let line: Vec<u8> = buf.drain(..=nl).collect();
-            let line = &line[..line.len().saturating_sub(1)];
-            if line.is_empty() { continue; }
-            match serde_json::from_slice::<LocalChatLine>(line) {
-                Ok(p) => {
-                    if let Some(err) = p.error {
-                        let _ = out.send(ChatStreamChunk {
-                            delta: String::new(), done: true, error: Some(err),
-                        });
-                        return Ok(());
+    // 5-minute inactivity timeout: if no data arrives for this long, bail out
+    // so the UI doesn't appear frozen forever.
+    let inactivity_timeout = Duration::from_secs(300);
+
+    loop {
+        let chunk = tokio::time::timeout(inactivity_timeout, stream.next()).await;
+        match chunk {
+            Err(_elapsed) => {
+                // No data from Ollama for 5 minutes — report and exit.
+                let _ = out.send(ChatStreamChunk {
+                    delta: String::new(),
+                    done: true,
+                    error: Some("Ollama stopped responding (timeout). Try sending your message again.".into()),
+                });
+                return Ok(());
+            }
+            Ok(None) => break, // stream ended
+            Ok(Some(Err(e))) => return Err(e.into()),
+            Ok(Some(Ok(bytes))) => {
+                buf.extend_from_slice(&bytes);
+                loop {
+                    let Some(nl) = buf.iter().position(|b| *b == b'\n') else { break };
+                    let line: Vec<u8> = buf.drain(..=nl).collect();
+                    // Strip trailing \n and \r (handle both LF and CRLF)
+                    let mut end = line.len();
+                    while end > 0 && (line[end - 1] == b'\n' || line[end - 1] == b'\r') {
+                        end -= 1;
                     }
-                    let delta = p.message.map(|m| m.content).unwrap_or_default();
-                    let _ = out.send(ChatStreamChunk {
-                        delta, done: p.done, error: None,
-                    });
-                    if p.done { return Ok(()); }
+                    let line = &line[..end];
+                    if line.is_empty() { continue; }
+                    match serde_json::from_slice::<LocalChatLine>(line) {
+                        Ok(p) => {
+                            if let Some(err) = p.error {
+                                let _ = out.send(ChatStreamChunk {
+                                    delta: String::new(), done: true, error: Some(err),
+                                });
+                                return Ok(());
+                            }
+                            let delta = p.message.map(|m| m.content).unwrap_or_default();
+                            let _ = out.send(ChatStreamChunk {
+                                delta, done: p.done, error: None,
+                            });
+                            if p.done { return Ok(()); }
+                        }
+                        Err(e) => log::warn!("ollama chat: skipping unparseable line: {e}"),
+                    }
                 }
-                Err(e) => log::warn!("ollama chat: skipping unparseable line: {e}"),
             }
         }
     }
@@ -597,3 +635,86 @@ pub async fn stream_chat_local(
     });
     Ok(())
 }
+
+// ─── Local Filesystem: GGUF File Management ──────────────────────────────
+
+#[derive(Debug, Serialize, Clone)]
+pub struct GgufFile {
+    pub name: String,
+    pub size: u64,
+}
+
+/// List all downloaded `.gguf` files in the `models` directory.
+pub async fn list_local_ggufs() -> Result<Vec<GgufFile>, anyhow::Error> {
+    let exe_dir = std::env::current_exe()
+        .map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_path_buf())
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let models_dir = exe_dir.join("models");
+    
+    if !models_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    let mut entries = tokio::fs::read_dir(models_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("gguf") {
+            if let Ok(meta) = entry.metadata().await {
+                files.push(GgufFile {
+                    name: entry.file_name().to_string_lossy().into_owned(),
+                    size: meta.len(),
+                });
+            }
+        }
+    }
+    
+    Ok(files)
+}
+
+/// Securely delete a `.gguf` file from the `models` directory.
+pub async fn delete_local_gguf(filename: String) -> Result<(), anyhow::Error> {
+    // Only allow deleting .gguf files to prevent directory traversal / arbitrary file deletion
+    if !filename.ends_with(".gguf") || filename.contains('/') || filename.contains('\\') {
+        return Err(anyhow::anyhow!("Invalid filename"));
+    }
+
+    let exe_dir = std::env::current_exe()
+        .map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_path_buf())
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let models_dir = exe_dir.join("models");
+    let target_path = models_dir.join(filename);
+
+    if target_path.exists() {
+        tokio::fs::remove_file(target_path).await?;
+    } else {
+        return Err(anyhow::anyhow!("File not found"));
+    }
+    
+    Ok(())
+}
+
+/// Safely move a `.gguf` file to an arbitrary location on the hard drive.
+pub async fn move_local_gguf(filename: String, destination: String) -> Result<(), anyhow::Error> {
+    if !filename.ends_with(".gguf") || filename.contains('/') || filename.contains('\\') {
+        return Err(anyhow::anyhow!("Invalid source filename"));
+    }
+
+    let exe_dir = std::env::current_exe()
+        .map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_path_buf())
+        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
+    let models_dir = exe_dir.join("models");
+    let source_path = models_dir.join(filename);
+
+    if !source_path.exists() {
+        return Err(anyhow::anyhow!("Source file not found"));
+    }
+
+    // Attempt to copy the file to the new destination.
+    // If successful, remove the original file. This handles cross-drive moves securely.
+    tokio::fs::copy(&source_path, &destination).await?;
+    tokio::fs::remove_file(&source_path).await?;
+    
+    Ok(())
+}
+

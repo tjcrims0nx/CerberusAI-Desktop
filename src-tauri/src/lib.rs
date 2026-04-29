@@ -113,6 +113,24 @@ async fn chat_stream(
         .map_err(|e| e.to_string())
 }
 
+/// List all downloaded raw `.gguf` files kept in the local models folder.
+#[tauri::command]
+async fn list_local_ggufs() -> Result<Vec<ollama::GgufFile>, String> {
+    ollama::list_local_ggufs().await.map_err(|e| e.to_string())
+}
+
+/// Delete a specific downloaded `.gguf` file to free up disk space.
+#[tauri::command]
+async fn delete_local_gguf(filename: String) -> Result<(), String> {
+    ollama::delete_local_gguf(filename).await.map_err(|e| e.to_string())
+}
+
+/// Safely move a `.gguf` file to an arbitrary location.
+#[tauri::command]
+async fn move_local_gguf(filename: String, destination: String) -> Result<(), String> {
+    ollama::move_local_gguf(filename, destination).await.map_err(|e| e.to_string())
+}
+
 // ─── Hardware ─────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -177,6 +195,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(PullState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             check_api,
@@ -189,6 +208,9 @@ pub fn run() {
             chat_stream,
             detect_hardware,
             update_app,
+            list_local_ggufs,
+            delete_local_gguf,
+            move_local_gguf,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

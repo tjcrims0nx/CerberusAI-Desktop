@@ -3,14 +3,15 @@ import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
+import { save } from "@tauri-apps/plugin-dialog";
 import type {
   Chat,
-  Message,
   OllamaModel,
   AllowedModel,
-  OllamaStatus,
   HardwareInfo,
   ChatStreamChunk,
+  GgufFile,
+  OllamaStatus,
 } from "./types";
 
 const STORAGE_KEY = "cerberus.chats.v1";
@@ -27,10 +28,76 @@ const localStatus = ref<{ running: boolean; version?: string; error?: string }>(
 const hardware = ref<HardwareInfo | null>(null);
 const draft = ref<string>("");
 const streaming = ref<boolean>(false);
+const streamingContent = ref<string>("");
 const updating = ref<boolean>(false);
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
-const appVersion = ref<string>("0.1.3");
+const appVersion = ref<string>("0.2.0");
 const messagesEl = ref<HTMLElement | null>(null);
+
+// File Manager
+const showFileManager = ref(false);
+const localGgufs = ref<GgufFile[]>([]);
+const isDeletingGguf = ref(false);
+
+async function openFileManager() {
+  showFileManager.value = true;
+  await refreshLocalGgufs();
+}
+
+async function refreshLocalGgufs() {
+  try {
+    localGgufs.value = await invoke<GgufFile[]>("list_local_ggufs");
+  } catch (e) {
+    console.error("Failed to list ggufs", e);
+    localGgufs.value = [];
+  }
+}
+
+async function deleteGguf(filename: string) {
+  if (isDeletingGguf.value) return;
+  isDeletingGguf.value = true;
+  try {
+    await invoke("delete_local_gguf", { filename });
+    await refreshLocalGgufs();
+  } catch (e) {
+    alert("Failed to delete file: " + e);
+  } finally {
+    isDeletingGguf.value = false;
+  }
+}
+
+async function moveGguf(filename: string) {
+  if (isDeletingGguf.value) return;
+  
+  try {
+    const destination = await save({
+      defaultPath: filename,
+      filters: [{ name: 'GGUF Models', extensions: ['gguf'] }]
+    });
+    
+    if (destination === null) {
+      // user cancelled dialog
+      return;
+    }
+    
+    isDeletingGguf.value = true;
+    await invoke("move_local_gguf", { filename, destination });
+    await refreshLocalGgufs();
+  } catch (e) {
+    alert("Failed to move file: " + e);
+  } finally {
+    isDeletingGguf.value = false;
+  }
+}
+
+function formatBytes(bytes: number) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
 
 // API key gate
 const apiKey = ref<string>(localStorage.getItem(APIKEY_KEY) || "");
@@ -300,37 +367,62 @@ async function send() {
   saveChats();
   await scrollToBottom();
 
-  const assistantMsg: Message = { role: "assistant", content: "" };
-  chat.messages.push(assistantMsg);
+  chat.messages.push({ role: "assistant", content: "" });
+  const assistantIdx = chat.messages.length - 1;
+  streamingContent.value = "";
   streaming.value = true;
+
+  // Safety timeout: if no content arrives within 2 minutes, unblock the UI.
+  let gotContent = false;
+  const safetyTimer = setTimeout(() => {
+    if (!gotContent && streaming.value) {
+      streamingContent.value += "\n\n[error] No response from model — it may still be loading. Try again.";
+      chat.messages[assistantIdx].content = streamingContent.value;
+      streaming.value = false;
+      saveChats();
+    }
+  }, 120_000);
 
   const channel = new Channel<ChatStreamChunk>();
   channel.onmessage = (chunk) => {
     if (chunk.error) {
-      assistantMsg.content += `\n\n[error] ${chunk.error}`;
+      clearTimeout(safetyTimer);
+      streamingContent.value += `\n\n[error] ${chunk.error}`;
+      chat.messages[assistantIdx].content = streamingContent.value;
       streaming.value = false;
       saveChats();
       return;
     }
     if (chunk.delta) {
-      assistantMsg.content += chunk.delta;
+      gotContent = true;
+      streamingContent.value += chunk.delta;
       scrollToBottom();
     }
     if (chunk.done) {
+      clearTimeout(safetyTimer);
+      chat.messages[assistantIdx].content = streamingContent.value;
       streaming.value = false;
+      streamingContent.value = "";
       saveChats();
     }
   };
 
+  // Cap history to last 20 messages to avoid overwhelming the context window
+  const history = chat.messages.slice(0, -1);
+  const cappedHistory = history.length > 20 ? history.slice(-20) : history;
+
   try {
     await invoke("chat_stream", {
       model: selectedModel.value,
-      messages: chat.messages.slice(0, -1),
+      messages: cappedHistory,
       onEvent: channel,
     });
   } catch (e) {
-    assistantMsg.content += `\n\n[error] ${String(e)}`;
+    clearTimeout(safetyTimer);
+    streamingContent.value += `\n\n[error] ${String(e)}`;
+    chat.messages[assistantIdx].content = streamingContent.value;
     streaming.value = false;
+    streamingContent.value = "";
     saveChats();
   }
 }
@@ -439,6 +531,49 @@ onMounted(async () => {
 <template>
   <div class="glow-orb orb-1"></div>
   <div class="glow-orb orb-2"></div>
+
+  <!-- File Manager Modal -->
+  <div v-if="showFileManager" class="key-gate" @click.self="showFileManager = false" style="z-index: 1000;">
+    <div class="key-card" style="max-width: 600px; width: 90%;">
+      <div class="key-logo" style="margin-bottom: 1rem;">🗄️</div>
+      <h2 class="key-title" style="font-size: 1.5rem; letter-spacing: 2px;">LOCAL STORAGE MANAGER</h2>
+      <p class="key-sub">
+        Manage raw downloaded <code>.gguf</code> installer files. You can safely delete these to free up disk space on your computer after a model has been successfully imported into Ollama.
+      </p>
+
+      <div class="file-list">
+        <div v-if="localGgufs.length === 0" style="text-align: center; padding: 2rem; color: var(--text-muted);">
+          No downloaded .gguf files found.
+        </div>
+        <div v-else class="file-item" v-for="f in localGgufs" :key="f.name">
+          <div class="file-info">
+            <div class="file-name" :title="f.name">{{ f.name }}</div>
+            <div class="file-size">{{ formatBytes(f.size) }}</div>
+          </div>
+          <div style="display: flex; gap: 8px;">
+            <button 
+              class="move-btn" 
+              @click="moveGguf(f.name)" 
+              :disabled="isDeletingGguf"
+              title="Move or copy this file to another location"
+            >
+              MOVE
+            </button>
+            <button 
+              class="delete-btn" 
+              @click="deleteGguf(f.name)" 
+              :disabled="isDeletingGguf"
+              title="Delete this file from your computer"
+            >
+              DELETE
+            </button>
+          </div>
+        </div>
+      </div>
+      
+      <button class="close-modal-btn" @click="showFileManager = false">DONE</button>
+    </div>
+  </div>
 
   <!-- API Key Gate -->
   <div v-if="!apiKeyVerified" class="key-gate">
@@ -581,6 +716,10 @@ onMounted(async () => {
           <span v-else>CHECKING…</span>
         </button>
 
+        <button class="signout-btn" @click="openFileManager" title="Manage downloaded local model files">
+          MANAGE FILES
+        </button>
+
         <button class="signout-btn" @click="signOut" title="Clear API key and sign out">
           SIGN OUT
         </button>
@@ -625,7 +764,7 @@ onMounted(async () => {
                   i === activeChat.messages.length - 1 &&
                   m.role === 'assistant'
               }"
-            >{{ m.content }}</div>
+            >{{ (streaming && i === activeChat.messages.length - 1 && m.role === 'assistant') ? streamingContent : m.content }}</div>
           </div>
         </template>
 
@@ -800,6 +939,104 @@ onMounted(async () => {
   border-color: var(--red-400);
   box-shadow: 0 0 0 1px var(--red-500), 0 6px 18px var(--red-glow);
   animation: update-pulse 2.4s infinite ease-in-out;
+}
+
+.file-list {
+  background: var(--bg-deep);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  margin: 1.5rem 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.file-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1rem;
+  border-bottom: 1px solid var(--glass-border);
+}
+.file-item:last-child {
+  border-bottom: none;
+}
+.file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow: hidden;
+}
+.file-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-size {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+.move-btn {
+  background: rgba(100, 116, 139, 0.2);
+  border: 1px solid var(--glass-border);
+  color: var(--text-secondary);
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 150ms ease;
+  flex-shrink: 0;
+}
+.move-btn:hover:not(:disabled) {
+  background: var(--bg-frost);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+}
+.move-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.delete-btn {
+  background: rgba(220, 38, 38, 0.2);
+  border: 1px solid var(--red-600);
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  cursor: pointer;
+  transition: all 150ms ease;
+  flex-shrink: 0;
+  margin-left: 1rem;
+}
+.delete-btn:hover:not(:disabled) {
+  background: var(--red-600);
+  transform: translateY(-1px);
+}
+.delete-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.close-modal-btn {
+  width: 100%;
+  background: var(--bg-frost);
+  border: 1px solid var(--glass-border);
+  color: var(--text-secondary);
+  padding: 12px;
+  border-radius: var(--radius-md);
+  font-weight: 700;
+  letter-spacing: 2px;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+.close-modal-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 @keyframes update-pulse {
   0%, 100% { box-shadow: 0 0 0 1px var(--red-500), 0 6px 18px var(--red-glow); }
