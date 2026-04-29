@@ -722,7 +722,7 @@ onMounted(async () => {
             <span class="update-dot"></span>
             UPDATE TO v{{ updateInfo.latest }}
           </template>
-          <span v-else-if="updateInfo">UP TO DATE · v{{ updateInfo.current }}</span>
+          <span v-else-if="updateInfo">v{{ updateInfo.current }} · LATEST</span>
           <span v-else>CHECKING…</span>
         </button>
 
@@ -951,9 +951,10 @@ onMounted(async () => {
 
 .update-btn {
   margin-top: 0.8rem;
-  background: var(--red-600);
-  border: 1px solid var(--red-500);
-  color: #fff;
+  background: var(--bg-frost);
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--glass-border);
+  color: var(--text-muted);
   padding: 7px 10px;
   border-radius: var(--radius-sm);
   font-size: 0.65rem;
@@ -961,7 +962,6 @@ onMounted(async () => {
   font-weight: 800;
   text-transform: uppercase;
   transition: all 150ms var(--ease-out);
-  box-shadow: 0 4px 12px var(--red-glow-dim);
 }
 .update-btn:hover:not(:disabled) {
   filter: brightness(1.2);
@@ -973,8 +973,9 @@ onMounted(async () => {
   cursor: not-allowed;
 }
 .update-btn-available {
-  background: linear-gradient(135deg, var(--red-500), var(--red-600));
-  border-color: var(--red-400);
+  background: var(--red-600) !important;
+  border-color: var(--red-500) !important;
+  color: #fff !important;
   box-shadow: 0 0 0 1px var(--red-500), 0 6px 18px var(--red-glow);
   animation: update-pulse 2.4s infinite ease-in-out;
 }

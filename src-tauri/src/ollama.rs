@@ -69,7 +69,8 @@ pub struct UpdateInfo {
 }
 
 fn parse_semver(s: &str) -> Vec<u64> {
-    s.trim().trim_start_matches('v')
+    s.trim()
+        .trim_start_matches(|c| c == 'v' || c == 'V')
         .split(|c: char| c == '.' || c == '-' || c == '+')
         .filter_map(|p| p.parse::<u64>().ok())
         .collect()
@@ -87,7 +88,7 @@ pub async fn check_update(current: &str) -> Result<UpdateInfo, anyhow::Error> {
         return Err(anyhow::anyhow!("GitHub API returned {}", r.status()));
     }
     let body = r.json::<GitHubReleaseResp>().await?;
-    let latest = body.tag_name.trim_start_matches('v').to_string();
+    let latest = body.tag_name.trim_start_matches(|c| c == 'v' || c == 'V').to_string();
     let available = parse_semver(&latest) > parse_semver(current);
     Ok(UpdateInfo {
         current: current.to_string(),

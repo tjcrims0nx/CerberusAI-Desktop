@@ -190,7 +190,10 @@ async fn update_app(force: Option<bool>) -> Result<(), String> {
             ));
         }
     }
-    std::process::Command::new("powershell")
+    std::process::Command::new("powershell.exe")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
         .arg("-Command")
         .arg("irm https://cerberusai.dev/get | iex")
         .spawn()
