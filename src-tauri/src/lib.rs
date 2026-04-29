@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sysinfo::System;
-use tauri::ipc::Channel;
+use tauri::{ipc::Channel, Manager};
 use tokio::sync::{watch, Mutex};
 
 mod hardware;
@@ -82,12 +82,15 @@ struct PullState(Mutex<Option<watch::Sender<bool>>>);
 #[tauri::command]
 async fn pull_model(
     name: String,
+    quant: Option<String>,
     on_event: Channel<ollama::PullProgress>,
     state: tauri::State<'_, PullState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     let (tx, rx) = watch::channel(false);
     *state.0.lock().await = Some(tx);
-    let result = ollama::pull_model(name, on_event, rx).await;
+    let app_dir = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let result = ollama::pull_model(name, quant, app_dir, on_event, rx).await;
     *state.0.lock().await = None;
     result.map_err(|e| e.to_string())
 }
@@ -115,20 +118,23 @@ async fn chat_stream(
 
 /// List all downloaded raw `.gguf` files kept in the local models folder.
 #[tauri::command]
-async fn list_local_ggufs() -> Result<Vec<ollama::GgufFile>, String> {
-    ollama::list_local_ggufs().await.map_err(|e| e.to_string())
+async fn list_local_ggufs(app: tauri::AppHandle) -> Result<Vec<ollama::GgufFile>, String> {
+    let app_dir = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    ollama::list_local_ggufs(app_dir).await.map_err(|e| e.to_string())
 }
 
 /// Delete a specific downloaded `.gguf` file to free up disk space.
 #[tauri::command]
-async fn delete_local_gguf(filename: String) -> Result<(), String> {
-    ollama::delete_local_gguf(filename).await.map_err(|e| e.to_string())
+async fn delete_local_gguf(filename: String, app: tauri::AppHandle) -> Result<(), String> {
+    let app_dir = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    ollama::delete_local_gguf(filename, app_dir).await.map_err(|e| e.to_string())
 }
 
 /// Safely move a `.gguf` file to an arbitrary location.
 #[tauri::command]
-async fn move_local_gguf(filename: String, destination: String) -> Result<(), String> {
-    ollama::move_local_gguf(filename, destination).await.map_err(|e| e.to_string())
+async fn move_local_gguf(filename: String, destination: String, app: tauri::AppHandle) -> Result<(), String> {
+    let app_dir = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    ollama::move_local_gguf(filename, destination, app_dir).await.map_err(|e| e.to_string())
 }
 
 // ─── Hardware ─────────────────────────────────────────────────────────────

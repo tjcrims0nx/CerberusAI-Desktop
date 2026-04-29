@@ -247,6 +247,8 @@ pub struct PullProgress {
 /// Ollama while the model is imported.
 pub async fn pull_model(
     name: String,
+    quant: Option<String>,
+    app_dir: std::path::PathBuf,
     out: Channel<PullProgress>,
     mut cancel: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), anyhow::Error> {
@@ -273,11 +275,41 @@ pub async fn pull_model(
         return Err(anyhow::anyhow!("listing HTTP {status}"));
     }
     let entries = resp.json::<Vec<DirEntry>>().await?;
-    let chosen = entries
+    
+    // Filter to .gguf files
+    let mut valid_entries: Vec<DirEntry> = entries
         .into_iter()
         .filter(|e| e.kind == "file" && e.name.ends_with(".gguf"))
+        .collect();
+
+    if valid_entries.is_empty() {
+        return Err(anyhow::anyhow!("no .gguf found for {name}"));
+    }
+
+    // Apply quant filter if provided
+    if let Some(q) = quant {
+        let q_lower = q.to_lowercase();
+        let matches: Vec<DirEntry> = valid_entries
+            .into_iter()
+            .filter(|e| e.name.to_lowercase().contains(&q_lower))
+            .collect();
+            
+        if matches.is_empty() {
+            let msg = format!("no .gguf matching quant '{}' found for {}", q, name);
+            let _ = out.send(PullProgress {
+                status: format!("error: {}", msg),
+                completed: None, total: None, done: true,
+                error: Some(msg.clone()),
+            });
+            return Err(anyhow::anyhow!(msg));
+        }
+        valid_entries = matches;
+    }
+
+    let chosen = valid_entries
+        .into_iter()
         .min_by_key(|e| e.size)
-        .ok_or_else(|| anyhow::anyhow!("no .gguf found for {name}"))?;
+        .unwrap();
 
     let total = chosen.size;
     let url = format!("{LLM_FILES_BASE}/models/{name}/{}", chosen.name);
@@ -285,11 +317,15 @@ pub async fn pull_model(
     // 2. Parallel chunked download — 8 simultaneous connections.
     let safe_name = name.replace(['/', '\\', ':'], "_");
     
-    let exe_dir = std::env::current_exe()
-        .map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_path_buf())
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
-    let models_dir = exe_dir.join("models");
-    let _ = tokio::fs::create_dir_all(&models_dir).await;
+    let models_dir = app_dir.join("models");
+    if let Err(e) = tokio::fs::create_dir_all(&models_dir).await {
+        let msg = format!("failed to create models directory: {e}");
+        let _ = out.send(PullProgress {
+            status: format!("error: {}", msg),
+            completed: None, total: None, done: true, error: Some(msg.clone()),
+        });
+        return Err(anyhow::anyhow!(msg));
+    }
     
     let temp_path = models_dir.join(format!("{safe_name}-{}", chosen.name));
 
@@ -645,11 +681,8 @@ pub struct GgufFile {
 }
 
 /// List all downloaded `.gguf` files in the `models` directory.
-pub async fn list_local_ggufs() -> Result<Vec<GgufFile>, anyhow::Error> {
-    let exe_dir = std::env::current_exe()
-        .map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_path_buf())
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
-    let models_dir = exe_dir.join("models");
+pub async fn list_local_ggufs(app_dir: std::path::PathBuf) -> Result<Vec<GgufFile>, anyhow::Error> {
+    let models_dir = app_dir.join("models");
     
     if !models_dir.exists() {
         return Ok(Vec::new());
@@ -673,16 +706,13 @@ pub async fn list_local_ggufs() -> Result<Vec<GgufFile>, anyhow::Error> {
 }
 
 /// Securely delete a `.gguf` file from the `models` directory.
-pub async fn delete_local_gguf(filename: String) -> Result<(), anyhow::Error> {
+pub async fn delete_local_gguf(filename: String, app_dir: std::path::PathBuf) -> Result<(), anyhow::Error> {
     // Only allow deleting .gguf files to prevent directory traversal / arbitrary file deletion
     if !filename.ends_with(".gguf") || filename.contains('/') || filename.contains('\\') {
         return Err(anyhow::anyhow!("Invalid filename"));
     }
 
-    let exe_dir = std::env::current_exe()
-        .map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_path_buf())
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
-    let models_dir = exe_dir.join("models");
+    let models_dir = app_dir.join("models");
     let target_path = models_dir.join(filename);
 
     if target_path.exists() {
@@ -695,15 +725,12 @@ pub async fn delete_local_gguf(filename: String) -> Result<(), anyhow::Error> {
 }
 
 /// Safely move a `.gguf` file to an arbitrary location on the hard drive.
-pub async fn move_local_gguf(filename: String, destination: String) -> Result<(), anyhow::Error> {
+pub async fn move_local_gguf(filename: String, destination: String, app_dir: std::path::PathBuf) -> Result<(), anyhow::Error> {
     if !filename.ends_with(".gguf") || filename.contains('/') || filename.contains('\\') {
         return Err(anyhow::anyhow!("Invalid source filename"));
     }
 
-    let exe_dir = std::env::current_exe()
-        .map(|p| p.parent().unwrap_or(std::path::Path::new("")).to_path_buf())
-        .unwrap_or_else(|_| std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")));
-    let models_dir = exe_dir.join("models");
+    let models_dir = app_dir.join("models");
     let source_path = models_dir.join(filename);
 
     if !source_path.exists() {

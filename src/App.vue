@@ -440,9 +440,10 @@ async function cancelDownload() {
   pulling.value = null;
 }
 
-async function pullModel(name: string) {
+async function pullModel(name: string, quant?: string) {
   if (pulling.value) return;
-  pulling.value = { name, pct: 0, status: "starting…" };
+  const displayName = quant ? `${name} (${quant})` : name;
+  pulling.value = { name: displayName, pct: 0, status: "starting…" };
   const channel = new Channel<PullProgress>();
   channel.onmessage = (p) => {
     const pct = p.total && p.completed ? Math.floor((p.completed / p.total) * 100) : pulling.value?.pct ?? 0;
@@ -458,7 +459,7 @@ async function pullModel(name: string) {
     }
   };
   try {
-    await invoke("pull_model", { name, onEvent: channel });
+    await invoke("pull_model", { name, quant, onEvent: channel });
   } catch (e) {
     pulling.value = { name, pct: 0, status: `error: ${String(e)}` };
     setTimeout(() => { if (pulling.value?.name === name) pulling.value = null; }, 4000);
@@ -780,20 +781,36 @@ onMounted(async () => {
           <div v-if="localStatus.running && models.length === 0 && pullableModels.length > 0" class="pull-block">
             <p class="pull-eyebrow">No local models yet — pull one to start</p>
             <div class="pull-grid">
-              <button
+              <div
                 v-for="m in pullableModels"
                 :key="m.name"
                 class="pull-card"
-                :disabled="!!pulling"
-                @click="pullModel(m.name)"
               >
                 <div class="pull-header">
                   <span class="pull-name">{{ m.name }}</span>
-                  <span class="pull-quants">{{ m.quants }}</span>
                 </div>
                 <span class="pull-meta">{{ m.description }}</span>
-                <span class="pull-action">{{ pulling?.name === m.name ? 'Pulling…' : 'Pull Model' }}</span>
-              </button>
+                <div class="pull-quants-container">
+                  <button 
+                    v-for="q in m.quants.split(',').map(s => s.trim()).filter(Boolean)" 
+                    :key="q"
+                    class="quant-btn"
+                    :disabled="!!pulling"
+                    @click.stop="pullModel(m.name, q)"
+                  >
+                    {{ q }}
+                  </button>
+                  <button 
+                    v-if="!m.quants" 
+                    class="quant-btn"
+                    :disabled="!!pulling"
+                    @click.stop="pullModel(m.name)"
+                  >
+                    Pull
+                  </button>
+                </div>
+                <span v-if="pulling?.name.startsWith(m.name)" class="pull-action">Pulling…</span>
+              </div>
             </div>
           </div>
           <div v-else-if="localStatus.running && allowedModels.length === 0" class="pull-block">
@@ -1396,13 +1413,34 @@ onMounted(async () => {
   justify-content: space-between;
   align-items: center;
 }
-.pull-quants {
-  font-size: 0.6rem;
-  background: var(--red-600);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-weight: 800;
+.pull-quants-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.quant-btn {
+  background: var(--bg-frost);
+  border: 1px solid var(--glass-border);
+  color: var(--text-secondary);
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.65rem;
+  font-weight: 700;
   letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+.quant-btn:hover:not(:disabled) {
+  background: var(--red-glow-dim);
+  border-color: var(--red-500);
+  color: #fff;
+  transform: translateY(-1px);
+}
+.quant-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .pull-meta {
   font-size: 0.72rem;
