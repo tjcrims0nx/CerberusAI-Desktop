@@ -77,6 +77,7 @@ async fn list_models() -> Result<Vec<ollama::ModelInfo>, String> {
 }
 
 struct PullState(Mutex<Option<watch::Sender<bool>>>);
+struct ChatState(Mutex<Option<watch::Sender<bool>>>);
 
 /// Stream `ollama pull <name>` progress to the frontend.
 #[tauri::command]
@@ -110,10 +111,22 @@ async fn chat_stream(
     model: String,
     messages: Vec<ChatMessage>,
     on_event: Channel<ChatStreamChunk>,
+    state: tauri::State<'_, ChatState>,
 ) -> Result<(), String> {
-    ollama::stream_chat_local(model, messages, on_event)
-        .await
-        .map_err(|e| e.to_string())
+    let (tx, rx) = watch::channel(false);
+    *state.0.lock().await = Some(tx);
+    let result = ollama::stream_chat_local(model, messages, on_event, rx).await;
+    *state.0.lock().await = None;
+    result.map_err(|e| e.to_string())
+}
+
+/// Stop an ongoing chat completion by aborting the HTTP stream.
+#[tauri::command]
+async fn cancel_chat(state: tauri::State<'_, ChatState>) -> Result<(), String> {
+    if let Some(tx) = state.0.lock().await.take() {
+        let _ = tx.send(true);
+    }
+    Ok(())
 }
 
 /// List all downloaded raw `.gguf` files kept in the local models folder.
@@ -203,6 +216,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(PullState(Mutex::new(None)))
+        .manage(ChatState(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             check_api,
             list_allowed_models,
@@ -212,6 +226,7 @@ pub fn run() {
             pull_model,
             cancel_pull,
             chat_stream,
+            cancel_chat,
             detect_hardware,
             update_app,
             list_local_ggufs,

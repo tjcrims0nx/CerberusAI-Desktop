@@ -610,6 +610,27 @@ body::before {
 }
 .send-btn:disabled { opacity: 0.25; cursor: not-allowed; }
 
+.stop-btn {
+  width: 38px; height: 38px;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, #b91c1c, #7f1d1d);
+  color: #fff;
+  box-shadow: 0 4px 16px -4px var(--red-glow);
+  transition: all 150ms var(--ease-out);
+  animation: stop-pulse 1.2s infinite ease-in-out;
+}
+.stop-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px -6px var(--red-glow);
+  filter: brightness(1.2);
+}
+@keyframes stop-pulse {
+  0%, 100% { box-shadow: 0 4px 16px -4px var(--red-glow); }
+  50% { box-shadow: 0 4px 24px -2px rgba(220, 38, 38, 0.7); }
+}
+
 .composer-hint {
   text-align: center;
   font-size: 0.68rem;

@@ -567,10 +567,13 @@ struct LocalChatLine {
 
 /// Stream a chat completion from the user's local Ollama.
 /// Output goes to `out` as `ChatStreamChunk { delta, done, error }`.
+/// When `cancel_rx` fires, we drop the HTTP stream, which closes the
+/// connection and immediately stops Ollama from burning CPU.
 pub async fn stream_chat_local(
     model: String,
     messages: Vec<ChatMessage>,
     out: Channel<ChatStreamChunk>,
+    mut cancel_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), anyhow::Error> {
     let c = http()?;
     let body = LocalChatReq { 
@@ -620,7 +623,23 @@ pub async fn stream_chat_local(
     let inactivity_timeout = Duration::from_secs(300);
 
     loop {
-        let chunk = tokio::time::timeout(inactivity_timeout, stream.next()).await;
+        // Race: either we get the next chunk, or the user presses stop.
+        let chunk = tokio::select! {
+            biased;
+            _ = cancel_rx.changed() => {
+                // User pressed stop — drop the stream to close the HTTP
+                // connection so Ollama immediately stops generating.
+                drop(stream);
+                let _ = out.send(ChatStreamChunk {
+                    delta: String::new(),
+                    done: true,
+                    error: None,
+                });
+                return Ok(());
+            }
+            c = tokio::time::timeout(inactivity_timeout, stream.next()) => c,
+        };
+
         match chunk {
             Err(_elapsed) => {
                 // No data from Ollama for 5 minutes — report and exit.
