@@ -34,6 +34,14 @@ const updateInfo = ref<{ current: string; latest: string; available: boolean } |
 const appVersion = ref<string>("0.2.0");
 const messagesEl = ref<HTMLElement | null>(null);
 
+function stripThinkTags(text: string): string {
+  // Remove completed <think>...</think> blocks (including multiline)
+  let result = text.replace(/<think>[\s\S]*?<\/think>/g, "");
+  // Remove an unclosed <think> block still being streamed
+  result = result.replace(/<think>[\s\S]*$/, "");
+  return result.trimStart();
+}
+
 // File Manager
 const showFileManager = ref(false);
 const localGgufs = ref<GgufFile[]>([]);
@@ -388,7 +396,7 @@ async function send() {
     if (chunk.error) {
       clearTimeout(safetyTimer);
       streamingContent.value += `\n\n[error] ${chunk.error}`;
-      chat.messages[assistantIdx].content = streamingContent.value;
+      chat.messages[assistantIdx].content = stripThinkTags(streamingContent.value);
       streaming.value = false;
       saveChats();
       return;
@@ -400,7 +408,7 @@ async function send() {
     }
     if (chunk.done) {
       clearTimeout(safetyTimer);
-      chat.messages[assistantIdx].content = streamingContent.value;
+      chat.messages[assistantIdx].content = stripThinkTags(streamingContent.value);
       streaming.value = false;
       streamingContent.value = "";
       saveChats();
@@ -772,9 +780,14 @@ onMounted(async () => {
                 streaming:
                   streaming &&
                   i === activeChat.messages.length - 1 &&
-                  m.role === 'assistant'
+                  m.role === 'assistant',
+                thinking:
+                  streaming &&
+                  i === activeChat.messages.length - 1 &&
+                  m.role === 'assistant' &&
+                  stripThinkTags(streamingContent) === ''
               }"
-            >{{ (streaming && i === activeChat.messages.length - 1 && m.role === 'assistant') ? streamingContent : m.content }}</div>
+            ><template v-if="streaming && i === activeChat.messages.length - 1 && m.role === 'assistant'"><span v-if="stripThinkTags(streamingContent) === ''" class="thinking-label">Thinking…</span><template v-else>{{ stripThinkTags(streamingContent) }}</template></template><template v-else>{{ m.content }}</template></div>
           </div>
         </template>
 

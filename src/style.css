@@ -484,9 +484,19 @@ body::before {
   color: var(--red-500);
   animation: cursor-blink 0.8s infinite;
 }
+.msg-bubble.thinking::after { display: none; }
+.thinking-label {
+  color: var(--zinc-400, #a1a1aa);
+  font-style: italic;
+  animation: thinking-pulse 1.4s ease-in-out infinite;
+}
 @keyframes cursor-blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0; }
+}
+@keyframes thinking-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
 }
 
 /* ─── EMPTY STATE ─── */
