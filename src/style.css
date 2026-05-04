@@ -65,7 +65,7 @@ html, body, #app { height: 100vh; overflow: hidden; }
 
 body {
   font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
-  background: var(--bg-void);
+  background: radial-gradient(circle at center, #260f42 0%, #020204 100%);
   color: var(--text-primary);
   font-weight: 400;
   font-size: 14px;
@@ -88,6 +88,35 @@ body::before {
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
   background-repeat: repeat;
   pointer-events: none;
+}
+
+/* ─── Purple Glowing Particles ─── */
+body::after {
+  content: '';
+  position: fixed;
+  inset: -100%;
+  z-index: 0;
+  pointer-events: none;
+  background-image: 
+    radial-gradient(1.5px 1.5px at 100px 50px, #a855f7, transparent),
+    radial-gradient(2px 2px at 200px 150px, #d8b4fe, transparent),
+    radial-gradient(1px 1px at 300px 250px, #c084fc, transparent),
+    radial-gradient(2.5px 2.5px at 400px 50px, #7e22ce, transparent),
+    radial-gradient(1.5px 1.5px at 500px 100px, #9333ea, transparent),
+    radial-gradient(2px 2px at 50px 300px, #c084fc, transparent),
+    radial-gradient(1px 1px at 150px 400px, #a855f7, transparent),
+    radial-gradient(2px 2px at 250px 500px, #d8b4fe, transparent),
+    radial-gradient(1.5px 1.5px at 350px 600px, #9333ea, transparent),
+    radial-gradient(3px 3px at 450px 200px, #a855f7, transparent);
+  background-repeat: repeat;
+  background-size: 600px 600px;
+  opacity: 0.6;
+  animation: floatUp 40s linear infinite;
+  filter: drop-shadow(0 0 6px rgba(168, 85, 247, 0.9));
+}
+@keyframes floatUp {
+  0% { transform: translateY(0); }
+  100% { transform: translateY(-600px); }
 }
 
 /* ─── Ambient glow orbs ─── */
@@ -132,7 +161,7 @@ body::before {
 .sidebar {
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, var(--bg-frost-deep) 0%, #060609 100%);
+  background: rgba(14, 14, 22, 0.25);
   backdrop-filter: blur(var(--frost-blur-heavy));
   -webkit-backdrop-filter: blur(var(--frost-blur-heavy));
   border-right: var(--border-dark);
