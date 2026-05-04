@@ -54,7 +54,7 @@
 html, body, #app { height: 100vh; overflow: hidden; }
 
 body {
-  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', 'Segoe UI Emoji', 'Apple Color Emoji', 'Noto Color Emoji', sans-serif;
   background: var(--bg-void);
   color: var(--text-primary);
   font-weight: 400;
@@ -681,3 +681,9 @@ body::before {
   :root { --sidebar-w: 0px; }
   .sidebar { display: none; }
 }
+
+.brand-logo-img { width: 24px; height: 24px; object-fit: contain; filter: drop-shadow(0 0 8px rgba(220, 38, 38, 0.4)); transition: transform 0.2s ease; }
+.brand:hover .brand-logo-img { transform: scale(1.05); }
+
+.empty-logo-img { width: 64px; height: 64px; object-fit: contain; margin-bottom: 1rem; filter: drop-shadow(0 0 24px rgba(220, 38, 38, 0.4)); animation: logo-float 4s ease-in-out infinite; }
+@keyframes logo-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }

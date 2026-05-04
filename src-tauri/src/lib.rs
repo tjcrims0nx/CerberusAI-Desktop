@@ -18,6 +18,10 @@ pub struct ChatStreamChunk {
     pub done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttft_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tps: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,7 +94,7 @@ async fn pull_model(
 ) -> Result<(), String> {
     let (tx, rx) = watch::channel(false);
     *state.0.lock().await = Some(tx);
-    let app_dir = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
     let result = ollama::pull_model(name, quant, app_dir, on_event, rx).await;
     *state.0.lock().await = None;
     result.map_err(|e| e.to_string())
@@ -132,22 +136,42 @@ async fn cancel_chat(state: tauri::State<'_, ChatState>) -> Result<(), String> {
 /// List all downloaded raw `.gguf` files kept in the local models folder.
 #[tauri::command]
 async fn list_local_ggufs(app: tauri::AppHandle) -> Result<Vec<ollama::GgufFile>, String> {
-    let app_dir = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
     ollama::list_local_ggufs(app_dir).await.map_err(|e| e.to_string())
 }
 
 /// Delete a specific downloaded `.gguf` file to free up disk space.
 #[tauri::command]
 async fn delete_local_gguf(filename: String, app: tauri::AppHandle) -> Result<(), String> {
-    let app_dir = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
     ollama::delete_local_gguf(filename, app_dir).await.map_err(|e| e.to_string())
 }
 
 /// Safely move a `.gguf` file to an arbitrary location.
 #[tauri::command]
 async fn move_local_gguf(filename: String, destination: String, app: tauri::AppHandle) -> Result<(), String> {
-    let app_dir = app.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
     ollama::move_local_gguf(filename, destination, app_dir).await.map_err(|e| e.to_string())
+}
+
+/// Import a `.gguf` file from anywhere on disk into the local Ollama instance.
+#[tauri::command]
+async fn import_local_gguf(source_path: String, model_name: String, app: tauri::AppHandle) -> Result<String, String> {
+    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    ollama::import_local_gguf(source_path, model_name, app_dir).await.map_err(|e| e.to_string())
+}
+
+/// Activate a `.gguf` file that is already inside the local managed models folder.
+#[tauri::command]
+async fn activate_managed_gguf(filename: String, model_name: String, app: tauri::AppHandle) -> Result<String, String> {
+    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    ollama::activate_managed_gguf(filename, model_name, app_dir).await.map_err(|e| e.to_string())
+}
+
+/// Delete a model from the local Ollama instance.
+#[tauri::command]
+async fn delete_ollama_model(name: String) -> Result<(), String> {
+    ollama::delete_ollama_model(&name).await.map_err(|e| e.to_string())
 }
 
 // ─── Hardware ─────────────────────────────────────────────────────────────
@@ -235,6 +259,9 @@ pub fn run() {
             list_local_ggufs,
             delete_local_gguf,
             move_local_gguf,
+            import_local_gguf,
+            activate_managed_gguf,
+            delete_ollama_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

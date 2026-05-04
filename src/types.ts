@@ -34,6 +34,8 @@ export interface ChatStreamChunk {
   delta: string;
   done: boolean;
   error?: string;
+  ttft_ms?: number;
+  tps?: number;
 }
 
 export interface GpuInfo {

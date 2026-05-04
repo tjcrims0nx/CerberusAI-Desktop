@@ -3,7 +3,7 @@ import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
-import { save } from "@tauri-apps/plugin-dialog";
+import { save, open } from "@tauri-apps/plugin-dialog";
 import type {
   Chat,
   OllamaModel,
@@ -31,8 +31,10 @@ const streaming = ref<boolean>(false);
 const streamingContent = ref<string>("");
 const updating = ref<boolean>(false);
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
-const appVersion = ref<string>("0.2.0");
+const appVersion = ref<string>("0.3.0");
 const messagesEl = ref<HTMLElement | null>(null);
+const lastTtft = ref<number | null>(null);
+const lastTps = ref<number | null>(null);
 
 function stripThinkTags(text: string): string {
   // Remove completed <think>...</think> blocks (including multiline)
@@ -42,13 +44,43 @@ function stripThinkTags(text: string): string {
   return result.trimStart();
 }
 
-// File Manager
+// Model Manager (LM Studio-style)
 const showFileManager = ref(false);
 const localGgufs = ref<GgufFile[]>([]);
 const isDeletingGguf = ref(false);
+const managerTab = ref<'ollama' | 'files' | 'cloud'>('ollama');
+const managerSearch = ref('');
+const isDeletingModel = ref(false);
+const activatedGgufs = ref<Set<string>>(new Set());
+
+const filteredOllamaModels = computed(() => {
+  const q = managerSearch.value.toLowerCase().trim();
+  if (!q) return models.value;
+  return models.value.filter(m => m.name.toLowerCase().includes(q));
+});
+
+const filteredGgufs = computed(() => {
+  const q = managerSearch.value.toLowerCase().trim();
+  if (!q) return localGgufs.value;
+  return localGgufs.value.filter(f => f.name.toLowerCase().includes(q));
+});
+
+const totalOllamaSize = computed(() =>
+  models.value.reduce((sum, m) => sum + (m.size || 0), 0)
+);
+
+const totalGgufSize = computed(() =>
+  localGgufs.value.reduce((sum, f) => sum + f.size, 0)
+);
 
 async function openFileManager() {
   showFileManager.value = true;
+  managerSearch.value = '';
+  await refreshAllModels();
+}
+
+async function refreshAllModels() {
+  await refreshModels();
   await refreshLocalGgufs();
 }
 
@@ -74,6 +106,20 @@ async function deleteGguf(filename: string) {
   }
 }
 
+async function deleteOllamaModel(name: string) {
+  if (isDeletingModel.value) return;
+  if (!confirm(`Remove "${name}" from Ollama? This will free disk space but you'll need to re-download it to use again.`)) return;
+  isDeletingModel.value = true;
+  try {
+    await invoke("delete_ollama_model", { name });
+    await refreshModels();
+  } catch (e) {
+    alert("Failed to delete model: " + e);
+  } finally {
+    isDeletingModel.value = false;
+  }
+}
+
 async function moveGguf(filename: string) {
   if (isDeletingGguf.value) return;
   
@@ -95,6 +141,65 @@ async function moveGguf(filename: string) {
     alert("Failed to move file: " + e);
   } finally {
     isDeletingGguf.value = false;
+  }
+}
+
+const isImporting = ref(false);
+
+async function importGguf() {
+  if (isImporting.value) return;
+  try {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: 'GGUF Models', extensions: ['gguf'] }],
+      title: 'Select a .gguf model file to import',
+    });
+    if (!selected) return;
+
+    const filePath = typeof selected === 'string' ? selected : String(selected);
+    // Derive a default model name from filename (strip extension + quant suffix)
+    const basename = filePath.split(/[\\/]/).pop() || 'custom-model';
+    const defaultName = basename.replace(/\.gguf$/i, '').replace(/[-_](f16|F16|Q[\d]+_K_[MSL]|Q[\d]+_[\d]+|IQ[\d]+_[A-Z]+|Q[\d]+)$/i, '');
+
+    const modelName = prompt('Model name for Ollama:', defaultName);
+    if (!modelName || !modelName.trim()) return;
+
+    isImporting.value = true;
+    const result = await invoke<string>('import_local_gguf', {
+      sourcePath: filePath,
+      modelName: modelName.trim(),
+    });
+    alert(result);
+    await refreshModels();
+    await refreshLocalGgufs();
+  } catch (e) {
+    alert('Import failed: ' + e);
+  } finally {
+    isImporting.value = false;
+  }
+}
+
+async function activateGguf(filename: string) {
+  if (isImporting.value) return;
+  const basename = filename.split(/[\\/]/).pop() || 'custom-model';
+  const defaultName = basename.replace(/\.gguf$/i, '').replace(/[-_](f16|F16|Q[\d]+_K_[MSL]|Q[\d]+_[\d]+|IQ[\d]+_[A-Z]+|Q[\d]+)$/i, '');
+
+  const modelName = prompt(`Activate ${filename} in Ollama?\n\nEnter model name:`, defaultName);
+  if (!modelName || !modelName.trim()) return;
+
+  isImporting.value = true;
+  try {
+    const result = await invoke<string>('activate_managed_gguf', {
+      filename: filename,
+      modelName: modelName.trim(),
+    });
+    alert(result);
+    activatedGgufs.value.add(filename);
+    await refreshModels();
+  } catch (e) {
+    alert('Activation failed: ' + e);
+  } finally {
+    isImporting.value = false;
   }
 }
 
@@ -129,10 +234,6 @@ const allModelChoices = computed(() => {
     quants: m.quants
   }));
 });
-const pullableModels = computed(() =>
-  allModelChoices.value.filter((c) => !c.downloaded)
-);
-
 const activeChat = computed<Chat | null>(() =>
   chats.value.find((c) => c.id === activeId.value) ?? null
 );
@@ -359,7 +460,7 @@ async function send() {
   if (!text || streaming.value || !activeChat.value || !selectedModel.value) return;
   if (!apiKeyVerified.value || !apiKey.value) return;
   if (pulling.value) return;
-  if (!models.value.some((m) => m.name.replace(/:latest$/, '') === selectedModel.value)) return;
+  if (!models.value.some((m) => m.name === selectedModel.value || m.name.replace(/:latest$/, '') === selectedModel.value)) return;
   if (!localStatus.value.running) {
     await checkLocal();
     if (!localStatus.value.running) return;
@@ -379,6 +480,8 @@ async function send() {
   const assistantIdx = chat.messages.length - 1;
   streamingContent.value = "";
   streaming.value = true;
+  lastTtft.value = null;
+  lastTps.value = null;
 
   // Safety timeout: if no content arrives within 2 minutes, unblock the UI.
   let gotContent = false;
@@ -393,6 +496,9 @@ async function send() {
 
   const channel = new Channel<ChatStreamChunk>();
   channel.onmessage = (chunk) => {
+    if (chunk.ttft_ms !== undefined && chunk.ttft_ms !== null) lastTtft.value = chunk.ttft_ms;
+    if (chunk.tps !== undefined && chunk.tps !== null) lastTps.value = chunk.tps;
+
     if (chunk.error) {
       clearTimeout(safetyTimer);
       streamingContent.value += `\n\n[error] ${chunk.error}`;
@@ -550,46 +656,223 @@ onMounted(async () => {
   <div class="glow-orb orb-1"></div>
   <div class="glow-orb orb-2"></div>
 
-  <!-- File Manager Modal -->
+  <!-- Model Manager Modal (LM Studio-style) -->
   <div v-if="showFileManager" class="key-gate" @click.self="showFileManager = false" style="z-index: 1000;">
-    <div class="key-card" style="max-width: 600px; width: 90%;">
-      <div class="key-logo" style="margin-bottom: 1rem;">🗄️</div>
-      <h2 class="key-title" style="font-size: 1.5rem; letter-spacing: 2px;">LOCAL STORAGE MANAGER</h2>
-      <p class="key-sub">
-        Manage raw downloaded <code>.gguf</code> installer files. You can safely delete these to free up disk space on your computer after a model has been successfully imported into Ollama.
-      </p>
-
-      <div class="file-list">
-        <div v-if="localGgufs.length === 0" style="text-align: center; padding: 2rem; color: var(--text-muted);">
-          No downloaded .gguf files found.
-        </div>
-        <div v-else class="file-item" v-for="f in localGgufs" :key="f.name">
-          <div class="file-info">
-            <div class="file-name" :title="f.name">{{ f.name }}</div>
-            <div class="file-size">{{ formatBytes(f.size) }}</div>
+    <div class="manager-panel">
+      <!-- Header -->
+      <div class="manager-header">
+        <div class="manager-title-row">
+          <div class="key-logo" style="width: 42px; height: 42px; font-size: 1.1rem; margin: 0;">🧠</div>
+          <div>
+            <h2 class="manager-title">MODEL MANAGER</h2>
+            <p class="manager-subtitle">Manage your local AI models</p>
           </div>
-          <div style="display: flex; gap: 8px;">
-            <button 
-              class="move-btn" 
-              @click="moveGguf(f.name)" 
-              :disabled="isDeletingGguf"
-              title="Move or copy this file to another location"
-            >
-              MOVE
-            </button>
-            <button 
-              class="delete-btn" 
-              @click="deleteGguf(f.name)" 
-              :disabled="isDeletingGguf"
-              title="Delete this file from your computer"
-            >
-              DELETE
-            </button>
+          <div style="margin-left: auto; display: flex; gap: 8px;">
+            <button class="manager-close" @click="refreshAllModels" title="Refresh models">↻</button>
+            <button class="manager-close" @click="showFileManager = false" title="Close">✕</button>
+          </div>
+        </div>
+
+        <!-- Search bar -->
+        <div class="manager-search-row">
+          <input
+            v-model="managerSearch"
+            class="manager-search"
+            type="text"
+            placeholder="Search models…"
+            spellcheck="false"
+          />
+        </div>
+
+        <!-- Tabs -->
+        <div class="manager-tabs">
+          <button
+            class="manager-tab"
+            :class="{ active: managerTab === 'ollama' }"
+            @click="managerTab = 'ollama'"
+          >
+            OLLAMA MODELS
+            <span class="manager-tab-count">{{ models.length }}</span>
+          </button>
+          <button
+            class="manager-tab"
+            :class="{ active: managerTab === 'files' }"
+            @click="managerTab = 'files'"
+          >
+            RAW FILES
+            <span class="manager-tab-count">{{ localGgufs.length }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Ollama Models Tab -->
+      <div v-if="managerTab === 'ollama'" class="manager-body">
+        <div class="manager-disk-bar">
+          <span class="manager-disk-label">TOTAL DISK USAGE</span>
+          <span class="manager-disk-value">{{ formatBytes(totalOllamaSize) }}</span>
+        </div>
+
+        <div v-if="filteredOllamaModels.length === 0" class="manager-empty">
+          <template v-if="managerSearch">No models matching "{{ managerSearch }}"</template>
+          <template v-else>No models installed in Ollama yet.<br/>Pull a model from the main screen or import a .gguf file.</template>
+        </div>
+
+        <div v-else class="manager-list">
+          <div v-for="m in filteredOllamaModels" :key="m.name" class="model-card">
+            <div class="model-card-main">
+              <div class="model-card-icon">{{ m.name.charAt(0).toUpperCase() }}</div>
+              <div class="model-card-info">
+                <div class="model-card-name" :title="m.name">{{ m.name.replace(/:latest$/, '') }}</div>
+                <div class="model-card-meta">
+                  <span class="model-tag">{{ formatBytes(m.size) }}</span>
+                  <span v-if="m.details?.quantization_level" class="model-tag quant">{{ m.details.quantization_level }}</span>
+                  <span v-if="m.details?.parameter_size" class="model-tag param">{{ m.details.parameter_size }}</span>
+                  <span v-if="m.details?.family" class="model-tag family">{{ m.details.family }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="model-card-actions">
+              <button
+                class="model-action-btn use"
+                v-if="selectedModel !== m.name.replace(/:latest$/, '')"
+                @click="selectedModel = m.name.replace(/:latest$/, ''); showFileManager = false"
+                title="Use this model"
+              >USE</button>
+              <span v-else class="model-active-badge">ACTIVE</span>
+              <button
+                class="model-action-btn danger"
+                @click="deleteOllamaModel(m.name)"
+                :disabled="isDeletingModel"
+                title="Remove from Ollama (keeps your raw .gguf files safe)"
+              >UNREGISTER</button>
+            </div>
           </div>
         </div>
       </div>
-      
-      <button class="close-modal-btn" @click="showFileManager = false">DONE</button>
+
+      <!-- Raw Files Tab -->
+      <div v-if="managerTab === 'files'" class="manager-body">
+        <div class="manager-disk-bar">
+          <span class="manager-disk-label">RAW GGUF FILES</span>
+          <span class="manager-disk-value">{{ formatBytes(totalGgufSize) }}</span>
+        </div>
+
+        <p class="manager-hint">
+          Downloaded <code>.gguf</code> installer files. You can safely delete these after a model has been imported into Ollama.
+        </p>
+
+        <div v-if="filteredGgufs.length === 0" class="manager-empty">
+          <template v-if="managerSearch">No files matching "{{ managerSearch }}"</template>
+          <template v-else>No raw .gguf files found.</template>
+        </div>
+
+        <div v-else class="manager-list">
+          <div v-for="f in filteredGgufs" :key="f.name" class="model-card">
+            <div class="model-card-main">
+              <div class="model-card-icon file-icon">📄</div>
+              <div class="model-card-info">
+                <div class="model-card-name" :title="f.name">{{ f.name }}</div>
+                <div class="model-card-meta">
+                  <span class="model-tag">{{ formatBytes(f.size) }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="model-card-actions">
+              <button
+                v-if="activatedGgufs.has(f.name)"
+                class="model-action-btn success"
+                disabled
+                title="Already activated in Ollama"
+              >ACTIVATED</button>
+              <button
+                v-else
+                class="model-action-btn use"
+                @click="activateGguf(f.name)"
+                :disabled="isImporting || isDeletingGguf"
+                title="Register this file in Ollama"
+              >ACTIVATE</button>
+              <button
+                class="model-action-btn"
+                @click="moveGguf(f.name)"
+                :disabled="isDeletingGguf"
+                title="Move to another location"
+              >MOVE</button>
+              <button
+                class="model-action-btn danger"
+                @click="deleteGguf(f.name)"
+                :disabled="isDeletingGguf"
+                title="Permanently delete this file from your hard drive"
+              >TRASH FILE</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cloud Models Tab -->
+      <div v-if="managerTab === 'cloud'" class="manager-body">
+        <div class="manager-disk-bar">
+          <span class="manager-disk-label">AUTHORIZED CLOUD MODELS</span>
+          <span class="manager-disk-value">{{ allowedModels.length }} Available</span>
+        </div>
+
+        <p class="manager-hint">
+          Models authorized by your Cerberus account. Pull them to your local Ollama instance.
+        </p>
+
+        <div v-if="allowedModels.length === 0" class="manager-empty">
+          No cloud models available for your account.
+        </div>
+
+        <div v-else class="manager-list">
+          <div v-for="m in allModelChoices" :key="m.name" class="model-card">
+            <div class="model-card-main">
+              <div class="model-card-icon file-icon">☁️</div>
+              <div class="model-card-info">
+                <div class="model-card-name" :title="m.name">{{ m.name }}</div>
+                <div class="model-card-meta">
+                  <span class="model-tag">{{ m.description }}</span>
+                </div>
+              </div>
+            </div>
+            <div class="model-card-actions">
+              <template v-if="m.downloaded">
+                <button class="model-action-btn success" disabled>DOWNLOADED</button>
+              </template>
+              <template v-else-if="pulling?.name.startsWith(m.name)">
+                <button class="model-action-btn use" disabled>PULLING...</button>
+              </template>
+              <template v-else>
+                <div style="display: flex; gap: 4px;">
+                  <button 
+                    v-for="q in m.quants.split(',').map(s => s.trim()).filter(Boolean)" 
+                    :key="q"
+                    class="model-action-btn use"
+                    @click.stop="pullModel(m.name, q)"
+                  >
+                    PULL {{ q }}
+                  </button>
+                  <button 
+                    v-if="!m.quants" 
+                    class="model-action-btn use"
+                    @click.stop="pullModel(m.name)"
+                  >
+                    PULL
+                  </button>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer actions -->
+      <div class="manager-footer">
+        <button class="import-btn" @click="importGguf" :disabled="isImporting || !localStatus.running">
+          <span v-if="isImporting">IMPORTING…</span>
+          <span v-else>⬆ IMPORT GGUF</span>
+        </button>
+        <button class="close-modal-btn" @click="showFileManager = false">DONE</button>
+      </div>
     </div>
   </div>
 
@@ -644,7 +927,7 @@ onMounted(async () => {
     <!-- Sidebar -->
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-logo">C</div>
+        <img src="./assets/logo.png" class="brand-logo-img" alt="Cerberus Logo" />
         <div class="brand-name">CERBERUS</div>
         <div class="brand-sub">v{{ appVersion }}</div>
       </div>
@@ -668,17 +951,6 @@ onMounted(async () => {
       </div>
 
       <div class="sidebar-footer">
-        <select
-          class="model-select"
-          v-model="selectedModel"
-          :disabled="!localStatus.running || allModelChoices.length === 0 || !!pulling"
-        >
-          <option v-if="allModelChoices.length === 0" value="">No models available</option>
-          <option v-for="c in allModelChoices" :key="c.name" :value="c.name">
-            {{ c.downloaded ? '● ' : '⬇ ' }}{{ c.name }}{{ c.downloaded ? '' : ' (download)' }}
-          </option>
-        </select>
-
         <!-- Cloud auth pill -->
         <span v-if="cloudStatus.kind === 'ok'" class="status-pill ok">
           <span class="dot"></span> CLOUD AUTH
@@ -734,8 +1006,8 @@ onMounted(async () => {
           <span v-else>CHECKING…</span>
         </button>
 
-        <button class="signout-btn" @click="openFileManager" title="Manage downloaded local model files">
-          MANAGE FILES
+        <button class="signout-btn" @click="openFileManager" title="Manage local models and GGUF files">
+          MODEL MANAGER
         </button>
 
         <button class="signout-btn" @click="signOut" title="Clear API key and sign out">
@@ -789,55 +1061,26 @@ onMounted(async () => {
               }"
             ><template v-if="streaming && i === activeChat.messages.length - 1 && m.role === 'assistant'"><span v-if="stripThinkTags(streamingContent) === ''" class="thinking-label">Thinking…</span><template v-else>{{ stripThinkTags(streamingContent) }}</template></template><template v-else>{{ m.content }}</template></div>
           </div>
+          <div class="msg-row" v-if="lastTtft !== null && !streaming" style="margin-top: -12px; margin-bottom: 8px;">
+            <div style="margin-left: 38px; display: flex; gap: 6px; opacity: 0.65;">
+               <span class="model-tag">⚡ TTFT: {{ lastTtft }}ms</span>
+               <span class="model-tag" v-if="lastTps">{{ lastTps.toFixed(1) }} tok/s</span>
+            </div>
+          </div>
         </template>
 
         <div v-else class="empty">
-          <div class="empty-logo">C</div>
+          <img src="./assets/logo.png" class="empty-logo-img" alt="Cerberus Logo" />
           <h2>Cerberus AI</h2>
           <p>
             Unfiltered. Uncensored. Unbound. Inference runs on your hardware via Ollama;
             your API key gates access through CerberusAI.
           </p>
 
-          <!-- Model picker if none pulled yet -->
-          <div v-if="localStatus.running && models.length === 0 && pullableModels.length > 0" class="pull-block">
-            <p class="pull-eyebrow">No local models yet — pull one to start</p>
-            <div class="pull-grid">
-              <div
-                v-for="m in pullableModels"
-                :key="m.name"
-                class="pull-card"
-              >
-                <div class="pull-header">
-                  <span class="pull-name">{{ m.name }}</span>
-                </div>
-                <span class="pull-meta">{{ m.description }}</span>
-                <div class="pull-quants-container">
-                  <button 
-                    v-for="q in m.quants.split(',').map(s => s.trim()).filter(Boolean)" 
-                    :key="q"
-                    class="quant-btn"
-                    :disabled="!!pulling"
-                    @click.stop="pullModel(m.name, q)"
-                  >
-                    {{ q }}
-                  </button>
-                  <button 
-                    v-if="!m.quants" 
-                    class="quant-btn"
-                    :disabled="!!pulling"
-                    @click.stop="pullModel(m.name)"
-                  >
-                    Pull
-                  </button>
-                </div>
-                <span v-if="pulling?.name.startsWith(m.name)" class="pull-action">Pulling…</span>
-              </div>
-            </div>
-          </div>
-          <div v-else-if="localStatus.running && allowedModels.length === 0" class="pull-block">
-            <p class="pull-eyebrow">No models available on your account</p>
-            <p class="pull-meta">Check <a href="https://access.cerberusai.dev" target="_blank" rel="noopener">access.cerberusai.dev</a></p>
+          <!-- Empty state action -->
+          <div v-if="localStatus.running && models.length === 0" class="pull-block" style="text-align: center;">
+            <p class="pull-eyebrow" style="margin-bottom: 1rem;">No local models found.</p>
+            <button class="banner-retry" @click="openFileManager">OPEN MODEL MANAGER TO PULL OR IMPORT</button>
           </div>
 
           <div v-else class="suggestions">
@@ -993,102 +1236,420 @@ onMounted(async () => {
   animation: update-pulse 2.4s infinite ease-in-out;
 }
 
-.file-list {
-  background: var(--bg-deep);
+/* ─── Model Manager Panel (LM Studio-style) ──────────────────────────── */
+.manager-panel {
+  width: 94%;
+  max-width: 720px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-frost-deep);
+  backdrop-filter: blur(var(--frost-blur-heavy));
+  -webkit-backdrop-filter: blur(var(--frost-blur-heavy));
+  border: 1px solid var(--glass-border-red);
+  border-radius: var(--radius-xl);
+  box-shadow:
+    0 30px 80px -20px rgba(0,0,0,0.9),
+    0 0 0 1px rgba(220, 38, 38, 0.12),
+    0 0 80px -20px rgba(220, 38, 38, 0.15);
+  animation: gateIn 350ms var(--ease-spring);
+  overflow: hidden;
+}
+
+.manager-header {
+  padding: 1.5rem 1.5rem 0;
+  flex-shrink: 0;
+}
+
+.manager-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.manager-title {
+  font-size: 1.2rem;
+  font-weight: 900;
+  letter-spacing: 3px;
+  color: #fff;
+  margin: 0;
+  line-height: 1.2;
+}
+
+.manager-subtitle {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  margin: 2px 0 0;
+  letter-spacing: 0.5px;
+}
+
+.manager-close {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--glass-border);
+  color: var(--text-muted);
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 150ms ease;
+}
+.manager-close:hover {
+  color: var(--red-400);
+  border-color: var(--glass-border-red);
+  background: var(--red-glow-dim);
+}
+
+.manager-search-row {
+  margin-top: 1rem;
+}
+
+.manager-search {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.35);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-md);
-  margin: 1.5rem 0;
-  max-height: 40vh;
-  overflow-y: auto;
+  padding: 10px 14px;
+  color: #fff;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  outline: none;
+  transition: border-color 180ms ease;
+  box-sizing: border-box;
 }
-.file-item {
+.manager-search:focus {
+  border-color: var(--glass-border-red);
+  box-shadow: 0 0 0 3px var(--red-glow-dim);
+}
+.manager-search::placeholder {
+  color: var(--text-muted);
+}
+
+.manager-tabs {
+  display: flex;
+  gap: 0;
+  margin-top: 1rem;
+  border-bottom: 1px solid var(--glass-border);
+}
+
+.manager-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  padding: 10px 12px;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 150ms ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.manager-tab:hover {
+  color: var(--text-secondary);
+}
+.manager-tab.active {
+  color: var(--red-400);
+  border-bottom-color: var(--red-400);
+}
+
+.manager-tab-count {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-border);
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--text-muted);
+}
+.manager-tab.active .manager-tab-count {
+  background: var(--red-glow-dim);
+  border-color: rgba(220, 38, 38, 0.3);
+  color: var(--red-400);
+}
+
+.manager-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem 1.5rem;
+  min-height: 0;
+}
+
+.manager-disk-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 1rem;
-  border-bottom: 1px solid var(--glass-border);
+  background: rgba(0, 0, 0, 0.25);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  margin-bottom: 0.75rem;
 }
-.file-item:last-child {
-  border-bottom: none;
+
+.manager-disk-label {
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: var(--text-muted);
+  text-transform: uppercase;
 }
-.file-info {
+
+.manager-disk-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--red-400);
+}
+
+.manager-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 0.75rem;
+}
+.manager-hint code {
+  background: var(--bg-frost);
+  border: 1px solid var(--glass-border);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--text-secondary);
+  font-size: 0.65rem;
+}
+
+.manager-empty {
+  text-align: center;
+  padding: 2.5rem 1rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.6;
+}
+
+.manager-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  overflow: hidden;
+  gap: 8px;
 }
-.file-name {
+
+/* ─── Model Cards ─────────────────────────────────────────────────────── */
+.model-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  transition: all 180ms ease;
+}
+.model-card:hover {
+  border-color: rgba(220, 38, 38, 0.25);
+  background: rgba(220, 38, 38, 0.04);
+}
+
+.model-card-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.model-card-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: linear-gradient(135deg, var(--red-600), #8b0000);
+  color: #fff;
+  font-weight: 900;
+  font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 12px var(--red-glow-dim);
+}
+.model-card-icon.file-icon {
+  background: linear-gradient(135deg, rgba(100, 116, 139, 0.4), rgba(100, 116, 139, 0.2));
+  box-shadow: none;
+  font-size: 1rem;
+}
+
+.model-card-info {
+  min-width: 0;
+  flex: 1;
+}
+
+.model-card-name {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
+  font-weight: 700;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.file-size {
-  font-size: 0.7rem;
-  color: var(--text-muted);
+
+.model-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 5px;
 }
-.move-btn {
-  background: rgba(100, 116, 139, 0.2);
-  border: 1px solid var(--glass-border);
-  color: var(--text-secondary);
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
-  font-size: 0.7rem;
+
+.model-tag {
+  font-size: 0.58rem;
   font-weight: 700;
-  letter-spacing: 1px;
-  cursor: pointer;
-  transition: all 150ms ease;
+  letter-spacing: 0.5px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+}
+.model-tag.quant {
+  background: rgba(220, 38, 38, 0.1);
+  border-color: rgba(220, 38, 38, 0.2);
+  color: var(--red-400);
+}
+.model-tag.param {
+  background: rgba(59, 130, 246, 0.1);
+  border-color: rgba(59, 130, 246, 0.2);
+  color: #60a5fa;
+}
+.model-tag.family {
+  background: rgba(168, 85, 247, 0.1);
+  border-color: rgba(168, 85, 247, 0.2);
+  color: #c084fc;
+}
+
+.model-card-actions {
+  display: flex;
+  gap: 6px;
   flex-shrink: 0;
 }
-.move-btn:hover:not(:disabled) {
+
+.model-action-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--glass-border);
+  color: var(--text-secondary);
+  padding: 5px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 150ms ease;
+  white-space: nowrap;
+}
+.model-action-btn:hover:not(:disabled) {
   background: var(--bg-frost);
   color: var(--text-primary);
   transform: translateY(-1px);
 }
-.move-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.model-action-btn.use {
+  background: rgba(220, 38, 38, 0.12);
+  border-color: rgba(220, 38, 38, 0.3);
+  color: var(--red-400);
 }
-.delete-btn {
-  background: rgba(220, 38, 38, 0.2);
-  border: 1px solid var(--red-600);
-  color: #fff;
-  padding: 6px 12px;
-  border-radius: var(--radius-sm);
-  font-size: 0.7rem;
-  font-weight: 700;
-  letter-spacing: 1px;
-  cursor: pointer;
-  transition: all 150ms ease;
-  flex-shrink: 0;
-  margin-left: 1rem;
-}
-.delete-btn:hover:not(:disabled) {
+.model-action-btn.use:hover {
   background: var(--red-600);
-  transform: translateY(-1px);
+  color: #fff;
+  box-shadow: 0 4px 12px var(--red-glow-dim);
 }
-.delete-btn:disabled {
-  opacity: 0.5;
+.model-action-btn.danger:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.3);
+  border-color: var(--red-600);
+  color: #fff;
+}
+.model-action-btn:disabled {
+  opacity: 0.35;
   cursor: not-allowed;
+}
+.model-action-btn.success {
+  background: rgba(16, 185, 129, 0.15);
+  color: #10b981;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+.model-action-btn.success:disabled {
+  opacity: 1;
+  cursor: default;
+}
+
+.model-active-badge {
+  font-size: 0.55rem;
+  font-weight: 800;
+  letter-spacing: 2px;
+  color: #4ade80;
+  padding: 5px 8px;
+  border: 1px solid rgba(74, 222, 128, 0.25);
+  border-radius: var(--radius-sm);
+  background: rgba(74, 222, 128, 0.08);
+}
+
+/* ─── Manager Footer ──────────────────────────────────────────────────── */
+.manager-footer {
+  flex-shrink: 0;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--glass-border);
+  display: flex;
+  gap: 8px;
 }
 
 .close-modal-btn {
-  width: 100%;
+  flex: 1;
   background: var(--bg-frost);
   border: 1px solid var(--glass-border);
   color: var(--text-secondary);
-  padding: 12px;
+  padding: 10px;
   border-radius: var(--radius-md);
   font-weight: 700;
   letter-spacing: 2px;
+  font-size: 0.7rem;
   cursor: pointer;
   transition: all 150ms ease;
 }
 .close-modal-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+.import-btn {
+  flex: 1;
+  background: linear-gradient(135deg, rgba(220, 38, 38, 0.15), rgba(220, 38, 38, 0.05));
+  border: 1px solid var(--glass-border-red);
+  color: var(--red-400);
+  padding: 10px 16px;
+  border-radius: var(--radius-md);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 180ms var(--ease-out);
+}
+.import-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, var(--red-600), #8b0000);
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px -8px var(--red-glow);
+}
+.import-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 @keyframes update-pulse {
   0%, 100% { box-shadow: 0 0 0 1px var(--red-500), 0 6px 18px var(--red-glow); }
