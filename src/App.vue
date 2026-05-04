@@ -31,7 +31,7 @@ const streaming = ref<boolean>(false);
 const streamingContent = ref<string>("");
 const updating = ref<boolean>(false);
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
-const appVersion = ref<string>("0.3.0");
+const appVersion = ref<string>("0.2.5");
 const messagesEl = ref<HTMLElement | null>(null);
 const lastTtft = ref<number | null>(null);
 const lastTps = ref<number | null>(null);
@@ -1561,14 +1561,15 @@ onMounted(async () => {
   transform: translateY(-1px);
 }
 .model-action-btn.use {
-  background: rgba(220, 38, 38, 0.12);
-  border-color: rgba(220, 38, 38, 0.3);
-  color: var(--red-400);
+  background: linear-gradient(180deg, var(--red-500), #8b0000);
+  border: 1px solid #400;
+  color: #fff;
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.3), 0 2px 5px rgba(0,0,0,0.4);
 }
 .model-action-btn.use:hover {
-  background: var(--red-600);
-  color: #fff;
-  box-shadow: 0 4px 12px var(--red-glow-dim);
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.4), 0 4px 12px var(--red-glow);
 }
 .model-action-btn.danger:hover:not(:disabled) {
   background: rgba(220, 38, 38, 0.3);
@@ -1611,27 +1612,34 @@ onMounted(async () => {
 
 .close-modal-btn {
   flex: 1;
-  background: var(--bg-frost);
-  border: 1px solid var(--glass-border);
-  color: var(--text-secondary);
+  background: linear-gradient(180deg, #1f1f26 0%, #121218 100%);
+  border: 1px solid rgba(0,0,0,0.8);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.15), 0 4px 10px rgba(0,0,0,0.4);
+  color: var(--text-primary);
   padding: 10px;
   border-radius: var(--radius-md);
-  font-weight: 700;
+  font-weight: 800;
   letter-spacing: 2px;
   font-size: 0.7rem;
   cursor: pointer;
   transition: all 150ms ease;
 }
 .close-modal-btn:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  background: linear-gradient(180deg, #2a2a33 0%, #1a1a22 100%);
+  color: #fff;
+  transform: translateY(-1px);
+}
+.close-modal-btn:active {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 4px rgba(0,0,0,0.6);
 }
 
 .import-btn {
   flex: 1;
-  background: linear-gradient(135deg, rgba(220, 38, 38, 0.15), rgba(220, 38, 38, 0.05));
-  border: 1px solid var(--glass-border-red);
-  color: var(--red-400);
+  background: linear-gradient(180deg, var(--red-500), #8b0000);
+  border: 1px solid #400;
+  color: #fff;
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.3), 0 4px 10px rgba(0,0,0,0.4);
   padding: 10px 16px;
   border-radius: var(--radius-md);
   font-size: 0.7rem;
@@ -1642,14 +1650,19 @@ onMounted(async () => {
   transition: all 180ms var(--ease-out);
 }
 .import-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, var(--red-600), #8b0000);
-  color: #fff;
-  transform: translateY(-1px);
-  box-shadow: 0 8px 22px -8px var(--red-glow);
+  filter: brightness(1.1);
+  transform: translateY(-2px);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.4), 0 8px 24px -4px var(--red-glow);
+}
+.import-btn:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 6px rgba(0,0,0,0.6);
+  background: #8b0000;
 }
 .import-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+  box-shadow: none;
 }
 @keyframes update-pulse {
   0%, 100% { box-shadow: 0 0 0 1px var(--red-500), 0 6px 18px var(--red-glow); }
@@ -1694,17 +1707,12 @@ onMounted(async () => {
 .key-card {
   width: 100%;
   max-width: 440px;
-  background: var(--bg-frost-deep);
-  backdrop-filter: blur(var(--frost-blur-heavy));
-  -webkit-backdrop-filter: blur(var(--frost-blur-heavy));
-  border: 1px solid var(--glass-border-red);
+  background: linear-gradient(180deg, #101015 0%, #060609 100%);
+  border: 1px solid #000;
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.06), 0 40px 100px -20px rgba(0,0,0,1);
   border-radius: var(--radius-xl);
   padding: 2.5rem 2rem;
   text-align: center;
-  box-shadow:
-    0 30px 80px -20px rgba(0,0,0,0.9),
-    0 0 0 1px rgba(220, 38, 38, 0.12),
-    0 0 80px -20px rgba(220, 38, 38, 0.15);
   animation: gateIn 350ms var(--ease-spring);
 }
 @keyframes gateIn {
