@@ -90,7 +90,7 @@ body::before {
   pointer-events: none;
 }
 
-/* ─── Purple Glowing Particles ─── */
+/* ─── Purple Matrix Code ─── */
 body::after {
   content: '';
   position: fixed;
@@ -98,25 +98,18 @@ body::after {
   z-index: 0;
   pointer-events: none;
   background-image: 
-    radial-gradient(1.5px 1.5px at 100px 50px, #a855f7, transparent),
-    radial-gradient(2px 2px at 200px 150px, #d8b4fe, transparent),
-    radial-gradient(1px 1px at 300px 250px, #c084fc, transparent),
-    radial-gradient(2.5px 2.5px at 400px 50px, #7e22ce, transparent),
-    radial-gradient(1.5px 1.5px at 500px 100px, #9333ea, transparent),
-    radial-gradient(2px 2px at 50px 300px, #c084fc, transparent),
-    radial-gradient(1px 1px at 150px 400px, #a855f7, transparent),
-    radial-gradient(2px 2px at 250px 500px, #d8b4fe, transparent),
-    radial-gradient(1.5px 1.5px at 350px 600px, #9333ea, transparent),
-    radial-gradient(3px 3px at 450px 200px, #a855f7, transparent);
+    url('data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22240%22%20height%3D%22240%22%3E%0A%3Cstyle%3Etext%20%7B%20font-family%3A%20monospace%3B%20font-size%3A%2016px%3B%20font-weight%3A%20bold%3B%20fill%3A%20%23a855f7%3B%20opacity%3A%200.8%3B%20%7D%3C/style%3E%0A%3Ctext%20x%3D%2220%22%20y%3D%220%22%3E1%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2220%22%3E0%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2240%22%3E1%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2260%22%3E0%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2280%22%3E1%3C/text%3E%0A%3Ctext%20x%3D%2280%22%20y%3D%2280%22%3E0%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22100%22%3E1%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22120%22%3E1%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22140%22%3E0%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22160%22%3E1%3C/text%3E%0A%3Ctext%20x%3D%22140%22%20y%3D%22160%22%3E1%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22180%22%3E0%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22200%22%3E1%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22220%22%3E0%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22240%22%3E1%3C/text%3E%0A%3Ctext%20x%3D%22200%22%20y%3D%2240%22%3E0%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%2260%22%3E1%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%2280%22%3E0%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%22100%22%3E1%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%22120%22%3E1%3C/text%3E%0A%3C/svg%3E'),
+    url('data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22240%22%20height%3D%22240%22%3E%0A%3Cstyle%3Etext%20%7B%20font-family%3A%20monospace%3B%20font-size%3A%2016px%3B%20font-weight%3A%20bold%3B%20fill%3A%20%23c084fc%3B%20opacity%3A%200.5%3B%20%7D%3C/style%3E%0A%3Ctext%20x%3D%2220%22%20y%3D%220%22%3E1%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2220%22%3E0%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2240%22%3E1%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2260%22%3E0%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2280%22%3E1%3C/text%3E%0A%3Ctext%20x%3D%2280%22%20y%3D%2280%22%3E0%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22100%22%3E1%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22120%22%3E1%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22140%22%3E0%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22160%22%3E1%3C/text%3E%0A%3Ctext%20x%3D%22140%22%20y%3D%22160%22%3E1%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22180%22%3E0%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22200%22%3E1%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22220%22%3E0%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22240%22%3E1%3C/text%3E%0A%3Ctext%20x%3D%22200%22%20y%3D%2240%22%3E0%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%2260%22%3E1%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%2280%22%3E0%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%22100%22%3E1%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%22120%22%3E1%3C/text%3E%0A%3C/svg%3E'),
+    url('data:image/svg+xml;utf8,%3Csvg%20xmlns%3D%22http%3A//www.w3.org/2000/svg%22%20width%3D%22240%22%20height%3D%22240%22%3E%0A%3Cstyle%3Etext%20%7B%20font-family%3A%20monospace%3B%20font-size%3A%2016px%3B%20font-weight%3A%20bold%3B%20fill%3A%20%237e22ce%3B%20opacity%3A%200.3%3B%20%7D%3C/style%3E%0A%3Ctext%20x%3D%2220%22%20y%3D%220%22%3E1%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2220%22%3E0%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2240%22%3E1%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2260%22%3E0%3C/text%3E%3Ctext%20x%3D%2220%22%20y%3D%2280%22%3E1%3C/text%3E%0A%3Ctext%20x%3D%2280%22%20y%3D%2280%22%3E0%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22100%22%3E1%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22120%22%3E1%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22140%22%3E0%3C/text%3E%3Ctext%20x%3D%2280%22%20y%3D%22160%22%3E1%3C/text%3E%0A%3Ctext%20x%3D%22140%22%20y%3D%22160%22%3E1%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22180%22%3E0%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22200%22%3E1%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22220%22%3E0%3C/text%3E%3Ctext%20x%3D%22140%22%20y%3D%22240%22%3E1%3C/text%3E%0A%3Ctext%20x%3D%22200%22%20y%3D%2240%22%3E0%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%2260%22%3E1%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%2280%22%3E0%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%22100%22%3E1%3C/text%3E%3Ctext%20x%3D%22200%22%20y%3D%22120%22%3E1%3C/text%3E%0A%3C/svg%3E');
   background-repeat: repeat;
-  background-size: 600px 600px;
-  opacity: 0.6;
-  animation: floatUp 40s linear infinite;
-  filter: drop-shadow(0 0 6px rgba(168, 85, 247, 0.9));
+  background-size: 240px 240px, 320px 320px, 480px 480px;
+  background-position: 0 0, 100px 50px, 200px 100px;
+  animation: matrixRain 12s linear infinite;
+  filter: drop-shadow(0 0 5px rgba(168, 85, 247, 0.8));
 }
-@keyframes floatUp {
-  0% { transform: translateY(0); }
-  100% { transform: translateY(-600px); }
+@keyframes matrixRain {
+  0% { background-position: 0 0, 100px 50px, 200px 100px; }
+  100% { background-position: 0 240px, 100px 370px, 200px 580px; }
 }
 
 /* ─── Ambient glow orbs ─── */
