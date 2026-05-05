@@ -1,6 +1,6 @@
 # Cerberus AI — Local-First Chat Dashboard
 
-![Cerberus UI](assets/screenshot.png)
+![Cerberus UI](assets/screenshot.png?v=2)
 
 Cerberus is a powerful, local-first chat dashboard designed for uncensored and private interactions with language models. It runs entirely on your machine via Ollama, ensuring your data never leaves your local environment.
 
