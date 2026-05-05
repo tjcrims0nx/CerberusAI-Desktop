@@ -41,6 +41,8 @@ try {
     Write-Host "  Done. Launch Cerberus from the Start Menu." -ForegroundColor Green
     Write-Host "  Get your API key at https://access.cerberusai.dev" -ForegroundColor DarkGray
     Write-Host ""
+    Start-Sleep -Seconds 2
+    exit 0
 
 } catch {
     Write-Host "  ERROR: $_" -ForegroundColor Red

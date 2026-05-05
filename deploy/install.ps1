@@ -516,3 +516,5 @@ Write-Host "    Note: Premium models (Arbiter/Cerberus) will be pulled automatic
 Write-Host "          from our registry once you open the desktop app." -ForegroundColor DarkGray
 Write-Host "    Docs:    https://cerberusai.dev/docs" -ForegroundColor DarkGray
 Write-Host "    Discord: https://discord.gg/YvfewgZ6re`n" -ForegroundColor DarkGray
+Start-Sleep -Seconds 2
+exit 0
