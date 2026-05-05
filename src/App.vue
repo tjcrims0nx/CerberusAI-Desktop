@@ -879,7 +879,7 @@ onMounted(async () => {
   <!-- API Key Gate -->
   <div v-if="!apiKeyVerified" class="key-gate">
     <div class="key-card">
-      <div class="key-logo">C</div>
+      <img src="./assets/logo.png" class="key-logo-img" alt="Cerberus Logo" />
       <p class="key-eyebrow">Local-First. Unfiltered. Yours.</p>
       <h1 class="glitch key-title" data-text="CERBERUS">CERBERUS</h1>
       <p class="key-sub">
@@ -1740,6 +1740,14 @@ onMounted(async () => {
   z-index: -1;
   opacity: 0.3;
   filter: blur(1px);
+}
+.key-logo-img {
+  width: 72px; height: 72px;
+  margin: 0 auto 1.25rem;
+  border-radius: var(--radius-md);
+  object-fit: contain;
+  filter: drop-shadow(0 0 24px var(--red-glow));
+  animation: logo-pulse 4s infinite alternate ease-in-out;
 }
 
 .key-eyebrow {
