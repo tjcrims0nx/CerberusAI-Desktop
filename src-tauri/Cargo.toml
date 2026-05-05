@@ -1,6 +1,6 @@
 [package]
 name = "cerberus-desktop"
-version = "0.2.6"
+version = "0.2.7"
 description = "Cerberus AI — local-first chat dashboard"
 authors = ["CerberusAI"]
 edition = "2021"

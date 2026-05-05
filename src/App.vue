@@ -4,6 +4,27 @@ import { invoke, Channel } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { save, open } from "@tauri-apps/plugin-dialog";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
+
+marked.setOptions({ gfm: true, breaks: true });
+
+function renderMarkdown(text: string): string {
+  if (!text) return "";
+  try {
+    const html = marked.parse(text, { async: false }) as string;
+    return DOMPurify.sanitize(html, {
+      ADD_ATTR: ["target", "rel"],
+    });
+  } catch {
+    // Escape and return raw on any parse error
+    const escaped = text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    return `<p>${escaped}</p>`;
+  }
+}
 import type {
   Chat,
   OllamaModel,
@@ -42,6 +63,28 @@ function stripThinkTags(text: string): string {
   // Remove an unclosed <think> block still being streamed
   result = result.replace(/<think>[\s\S]*$/, "");
   return result.trimStart();
+}
+
+// Aggressive cleanup applied only when a message FINISHES streaming —
+// safe to strip leading/trailing artifacts here because we have the full text.
+function finalizeMessage(text: string): string {
+  if (!text) return text;
+  try {
+    let r = stripThinkTags(text);
+    // Drop trailing horizontal-rule separators: ---, ***, === (3+)
+    r = r.replace(/\n*\s*[-*=_]{3,}\s*$/g, "");
+    // Drop a trailing lone quote/backtick line
+    r = r.replace(/\n*\s*["'`]+\s*$/g, "");
+    // Drop leaked chat-template tokens anywhere
+    r = r.replace(/<\|im_(?:start|end)\|>/g, "");
+    r = r.replace(/<(?:start|end)_of_turn>/g, "");
+    // Drop orphan leading punctuation/whitespace before the first letter or emoji
+    r = r.replace(/^[\s,;:.!?'"`]+(?=[A-Za-z0-9À-￿])/, "");
+    r = r.trim();
+    return r.length === 0 && text.trim().length > 0 ? text.trim() : r;
+  } catch {
+    return text;
+  }
 }
 
 // Model Manager (LM Studio-style)
@@ -265,6 +308,27 @@ function loadChats() {
 function saveChats() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(chats.value));
 }
+
+const SYSTEM_PROMPT = [
+  "You are Cerberus, a direct and helpful assistant.",
+  "Format every response in GitHub-flavored markdown — it will be rendered, not shown raw.",
+  "Use these elements when they fit:",
+  "- **bold** for key terms, *italic* for soft emphasis",
+  "- `inline code` for filenames, commands, identifiers",
+  "- Fenced code blocks with a language tag (```bash, ```python, etc.) for any multi-line code",
+  "- Bullet lists with `-`, numbered lists with `1.` `2.` for sequences",
+  "- Task lists `- [x] done` and `- [ ] todo` for checklists",
+  "- Headings (`##`, `###`) only when the answer has multiple sections",
+  "Use emojis when they add meaning to a list item or heading — pick one that matches the line's intent:",
+  "    ✅ completed/correct   ❌ failure/no   ⚠️ warning",
+  "    🔧 fix/tool   📊 data/metric   💡 tip/idea",
+  "    🚀 launch/deploy   🔍 search/inspect   📁 file/path",
+  "    💻 code   🧠 model/AI   📝 note   ⏱️ timing",
+  "    🔒 security   🌐 network/api   🐛 bug   ❓ question",
+  "Place at most one emoji per bullet or heading. Never decorate purely.",
+  "Never start a response with a stray '?' or other punctuation. Never echo special tokens like <|im_start|>, <start_of_turn>, or trailing horizontal rules like ---.",
+  "Be concise. Skip filler like 'Sure!' or 'Here is...' when the answer fits in one line.",
+].join("\n");
 
 function newChat() {
   const id = uid();
@@ -502,7 +566,7 @@ async function send() {
     if (chunk.error) {
       clearTimeout(safetyTimer);
       streamingContent.value += `\n\n[error] ${chunk.error}`;
-      chat.messages[assistantIdx].content = stripThinkTags(streamingContent.value);
+      chat.messages[assistantIdx].content = finalizeMessage(streamingContent.value);
       streaming.value = false;
       saveChats();
       return;
@@ -514,7 +578,7 @@ async function send() {
     }
     if (chunk.done) {
       clearTimeout(safetyTimer);
-      chat.messages[assistantIdx].content = stripThinkTags(streamingContent.value);
+      chat.messages[assistantIdx].content = finalizeMessage(streamingContent.value);
       streaming.value = false;
       streamingContent.value = "";
       saveChats();
@@ -524,11 +588,15 @@ async function send() {
   // Cap history to last 20 messages to avoid overwhelming the context window
   const history = chat.messages.slice(0, -1);
   const cappedHistory = history.length > 20 ? history.slice(-20) : history;
+  const messagesToSend = [
+    { role: "system", content: SYSTEM_PROMPT },
+    ...cappedHistory,
+  ];
 
   try {
     await invoke("chat_stream", {
       model: selectedModel.value,
-      messages: cappedHistory,
+      messages: messagesToSend,
       onEvent: channel,
     });
   } catch (e) {
@@ -1059,7 +1127,7 @@ onMounted(async () => {
                   m.role === 'assistant' &&
                   stripThinkTags(streamingContent) === ''
               }"
-            ><template v-if="streaming && i === activeChat.messages.length - 1 && m.role === 'assistant'"><span v-if="stripThinkTags(streamingContent) === ''" class="thinking-label">Thinking…</span><template v-else>{{ stripThinkTags(streamingContent) }}</template></template><template v-else>{{ m.content }}</template></div>
+            ><template v-if="streaming && i === activeChat.messages.length - 1 && m.role === 'assistant'"><span v-if="stripThinkTags(streamingContent) === ''" class="thinking-label">Thinking…</span><div v-else class="md-body" v-html="renderMarkdown(stripThinkTags(streamingContent))"></div></template><template v-else><div v-if="m.role === 'assistant'" class="md-body" v-html="renderMarkdown(m.content)"></div><template v-else>{{ m.content }}</template></template></div>
           </div>
           <div class="msg-row" v-if="lastTtft !== null && !streaming" style="margin-top: -12px; margin-bottom: 8px;">
             <div style="margin-left: 38px; display: flex; gap: 6px; opacity: 0.65;">
