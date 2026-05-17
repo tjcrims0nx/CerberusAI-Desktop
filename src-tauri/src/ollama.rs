@@ -563,7 +563,7 @@ pub async fn pull_model(
         return Err(anyhow::anyhow!(msg));
     }
 
-    let mut child = match tokio::process::Command::new("ollama")
+    let child = match tokio::process::Command::new("ollama")
         .arg("create")
         .arg(&ollama_model_name)
         .arg("-f")
