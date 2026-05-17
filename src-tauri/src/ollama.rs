@@ -153,9 +153,10 @@ struct OpenAiModelsResp {
     data: Vec<OpenAiModelEntry>,
 }
 
-/// Fetch the OpenAI-style model list from api.cerberusai.dev. The model id
-/// (e.g. `Arbiter-GL9b`) is also the directory name on llm.cerberusai.dev
-/// and the name we'll use for the local Ollama model.
+/// Fetch the OpenAI-style model list from api.cerberusai.dev, then enrich
+/// each entry with the list of quants actually available on llm.cerberusai.dev.
+/// This way the manager UI reflects real downloadable files, not the static
+/// metadata the API gateway hand-curates.
 pub async fn list_allowed(api_key: &str) -> Result<Vec<AllowedModel>, anyhow::Error> {
     let c = http()?;
     let r = c
@@ -171,11 +172,82 @@ pub async fn list_allowed(api_key: &str) -> Result<Vec<AllowedModel>, anyhow::Er
         return Err(anyhow::anyhow!("models API returned status {status}"));
     }
     let body = r.json::<OpenAiModelsResp>().await?;
-    Ok(body.data.into_iter().map(|m| AllowedModel {
-        id: m.id,
-        description: m.description,
-        quants: m.quants,
-    }).collect())
+
+    // For each model id, hit the CDN listing in parallel and extract quants
+    // from the actual filenames. Falls back to the API's hand-curated quants
+    // string if the CDN listing fails.
+    let mut handles: Vec<tokio::task::JoinHandle<AllowedModel>> = Vec::new();
+    for m in body.data {
+        let client = c.clone();
+        handles.push(tokio::spawn(async move {
+            let quants = match cdn_quants_for(&client, &m.id).await {
+                Ok(qs) if !qs.is_empty() => qs.join(", "),
+                _ => m.quants.clone(),
+            };
+            AllowedModel {
+                id: m.id,
+                description: m.description,
+                quants,
+            }
+        }));
+    }
+    let mut out = Vec::with_capacity(handles.len());
+    for h in handles {
+        if let Ok(m) = h.await {
+            out.push(m);
+        }
+    }
+    Ok(out)
+}
+
+/// List the quant labels (e.g. ["Q4_K_M", "Q8_0", "f16"]) actually available
+/// on the CDN for a given model id by parsing GGUF filenames.
+async fn cdn_quants_for(c: &reqwest::Client, model_id: &str) -> Result<Vec<String>, anyhow::Error> {
+    let url = format!("{LLM_FILES_BASE}/api/models/{model_id}/");
+    let r = c.get(&url).send().await?;
+    if !r.status().is_success() {
+        return Err(anyhow::anyhow!("cdn listing {} returned {}", model_id, r.status()));
+    }
+    let entries = r.json::<Vec<DirEntry>>().await?;
+    let mut quants: Vec<String> = entries
+        .into_iter()
+        .filter(|e| e.kind == "file" && e.name.to_lowercase().ends_with(".gguf"))
+        .filter_map(|e| extract_quant(&e.name))
+        .collect();
+    quants.sort();
+    quants.dedup();
+    Ok(quants)
+}
+
+/// Extract the quant label out of a GGUF filename like
+/// "Arbiter-GL9b-Q4_K_M.gguf" -> "Q4_K_M". Returns None if no recognizable
+/// quant suffix is found.
+fn extract_quant(filename: &str) -> Option<String> {
+    let stem = filename.strip_suffix(".gguf").unwrap_or(filename);
+    // Walk segments separated by '-' or '_' and pick the last one that looks
+    // like a quant label (Q\d, IQ\d, f\d, F\d, mostly).
+    let last_dash = stem.rfind('-')?;
+    let candidate = &stem[last_dash + 1..];
+    let lower = candidate.to_lowercase();
+    let looks_like_quant = lower.starts_with('q')
+        || lower.starts_with("iq")
+        || lower == "f16"
+        || lower == "f32"
+        || lower == "bf16";
+    if looks_like_quant {
+        Some(candidate.to_string())
+    } else {
+        // Some filenames use compound suffixes like "Q4_K_M" — re-check the
+        // last two segments joined.
+        let prev_dash = stem[..last_dash].rfind('-')?;
+        let combined = &stem[prev_dash + 1..];
+        let lower = combined.to_lowercase();
+        if lower.starts_with('q') || lower.starts_with("iq") {
+            Some(combined.to_string())
+        } else {
+            None
+        }
+    }
 }
 
 // ─── Local Ollama: status + model management ──────────────────────────────

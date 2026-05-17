@@ -133,6 +133,7 @@ async function openFileManager() {
 }
 
 async function refreshAllModels() {
+  await refreshAllowedModels();
   await refreshModels();
   await refreshLocalGgufs();
 }
@@ -393,7 +394,7 @@ async function refreshAllowedModels() {
     const rawModels = await invoke<AllowedModel[]>("list_allowed_models", {
       apiKey: apiKey.value,
     });
-    allowedModels.value = rawModels.filter((m) => m.id !== "cerberus-4b");
+    allowedModels.value = rawModels;
   } catch (e) {
     console.warn("list_allowed_models failed", e);
     allowedModels.value = [];
@@ -773,6 +774,14 @@ onMounted(async () => {
           >
             OLLAMA MODELS
             <span class="manager-tab-count">{{ models.length }}</span>
+          </button>
+          <button
+            class="manager-tab"
+            :class="{ active: managerTab === 'cloud' }"
+            @click="managerTab = 'cloud'"
+          >
+            CLOUD CATALOG
+            <span class="manager-tab-count">{{ allowedModels.length }}</span>
           </button>
           <button
             class="manager-tab"
