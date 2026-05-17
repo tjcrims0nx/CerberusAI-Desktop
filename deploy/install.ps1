@@ -47,6 +47,7 @@ $RepoOwner    = "tjcrims0nx"
 $RepoName     = "CerberusAI-Desktop"
 $WebView2Url  = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"   # Evergreen Bootstrapper
 $OllamaUrl    = "https://ollama.com/download/OllamaSetup.exe"
+$OllamaApi    = "https://api.github.com/repos/ollama/ollama/releases/latest"
 $WorkDir      = Join-Path $env:TEMP "CerberusInstall"
 
 # ---------- Custom Model Registry ----------
@@ -173,6 +174,74 @@ function Test-WingetReady {
     } catch { return $false }
 }
 
+# ---------- Ollama version helpers ----------
+
+# Pull the latest Ollama Windows installer URL + version from GitHub Releases.
+# Returns $null on network failure so callers can fall back to ollama.com/download.
+function Get-LatestOllamaRelease {
+    try {
+        $rel = Invoke-RestMethod -Uri $OllamaApi -Headers @{ "User-Agent" = "CerberusInstaller" } -TimeoutSec 15
+    } catch {
+        Write-Warn2 "Could not reach GitHub for latest Ollama version ($($_.Exception.Message)). Falling back to ollama.com redirect."
+        return $null
+    }
+    $exe = $rel.assets | Where-Object { $_.name -ieq "OllamaSetup.exe" } | Select-Object -First 1
+    if (-not $exe) { return $null }
+    $sha = $rel.assets | Where-Object { $_.name -ieq "sha256sum.txt" } | Select-Object -First 1
+    return [pscustomobject]@{
+        Version = $rel.tag_name.TrimStart("v","V")
+        Url     = $exe.browser_download_url
+        Size    = $exe.size
+        ShaUrl  = if ($sha) { $sha.browser_download_url } else { $null }
+    }
+}
+
+# Read the version Ollama reports about itself. Prefers the running daemon
+# (most accurate); falls back to `ollama --version` for cases where the
+# daemon is installed but not running yet.
+function Get-InstalledOllamaVersion {
+    $svc = Get-OllamaVersion
+    if ($svc) { return $svc }
+    if (Test-Command "ollama") {
+        try {
+            $line = (& ollama --version 2>$null | Select-Object -First 1)
+            if ($line -match "(\d+\.\d+\.\d+)") { return $Matches[1] }
+        } catch {}
+    }
+    return $null
+}
+
+# Compare semver strings as integer arrays; returns 1 if $a > $b, -1 if <, 0 if equal.
+function Compare-Semver([string]$a, [string]$b) {
+    $pa = $a.TrimStart("v","V") -split '[.\-+]'
+    $pb = $b.TrimStart("v","V") -split '[.\-+]'
+    for ($i = 0; $i -lt [Math]::Max($pa.Count, $pb.Count); $i++) {
+        $na = if ($i -lt $pa.Count -and ($pa[$i] -as [int]) -ne $null) { [int]$pa[$i] } else { 0 }
+        $nb = if ($i -lt $pb.Count -and ($pb[$i] -as [int]) -ne $null) { [int]$pb[$i] } else { 0 }
+        if ($na -gt $nb) { return 1 }
+        if ($na -lt $nb) { return -1 }
+    }
+    return 0
+}
+
+# Pull `OllamaSetup.exe`'s expected SHA-256 from the official sha256sum.txt
+# in the same release. Returns lowercase hex or $null.
+function Get-OllamaExpectedSha([string]$ShaUrl) {
+    if (-not $ShaUrl) { return $null }
+    try {
+        $body = Invoke-WebRequest -Uri $ShaUrl -UseBasicParsing -TimeoutSec 15
+        foreach ($line in ($body.Content -split "`n")) {
+            $parts = $line.Trim() -split '\s+'
+            if ($parts.Count -ge 2 -and $parts[-1] -ieq "OllamaSetup.exe") {
+                return $parts[0].ToLower()
+            }
+        }
+    } catch {
+        Write-Warn2 "Could not fetch Ollama checksum file: $($_.Exception.Message)"
+    }
+    return $null
+}
+
 # ---------- Hardware preflight ----------
 # Cerberus 4B v2 Abliterated Q4_K_M (~2.6 GB GGUF) is the smallest model
 # offered on cerberusai.dev. These are the absolute minimums to load + run it
@@ -216,6 +285,30 @@ function Get-PrimaryGpu {
         return [pscustomobject]@{
             Name   = $primary.Name
             VramMB = $vramMB
+        }
+    } catch { return $null }
+}
+
+# Probe nvidia-smi for driver version + CUDA support. Returns $null when no
+# NVIDIA driver is present (the user may still have an NVIDIA card but with
+# missing/broken drivers, which we want to warn about).
+#
+# Ollama 0.4+ requires NVIDIA driver >= 525 for CUDA support. Driver < 525
+# means inference silently falls back to CPU regardless of the GPU.
+function Get-NvidiaDriverInfo {
+    if (-not (Test-Command "nvidia-smi")) { return $null }
+    try {
+        $line = & nvidia-smi --query-gpu=driver_version,name --format=csv,noheader,nounits 2>$null | Select-Object -First 1
+        if (-not $line) { return $null }
+        $parts = $line.Split(",") | ForEach-Object { $_.Trim() }
+        if ($parts.Count -lt 1) { return $null }
+        $driver = $parts[0]
+        $major = 0
+        if ($driver -match '^(\d+)') { $major = [int]$Matches[1] }
+        return [pscustomobject]@{
+            Driver = $driver
+            Major  = $major
+            Name   = if ($parts.Count -ge 2) { $parts[1] } else { $null }
         }
     } catch { return $null }
 }
@@ -285,6 +378,22 @@ function Test-MinimumHardware {
         Write-Warn2 "No GPU with >=$REC_VRAM_GB GB VRAM detected. Inference will run on CPU at ~3-8 tokens/sec."
     } else {
         Write-OK "GPU acceleration available ($($gpu.Name), $vramGB GB VRAM)"
+
+        # NVIDIA driver sanity check. A user with an NVIDIA card but
+        # missing/old drivers will see Ollama "use GPU" in the UI and then
+        # silently fall back to CPU at runtime — the worst kind of bug.
+        if ($gpu.Name -match "NVIDIA|GeForce|RTX|GTX|Quadro|Tesla") {
+            $nv = Get-NvidiaDriverInfo
+            if (-not $nv) {
+                Write-Warn2 "NVIDIA GPU detected but nvidia-smi is missing. CUDA driver may not be installed; inference will fall back to CPU."
+                Write-Host "    Get the latest driver: https://www.nvidia.com/Download/index.aspx" -ForegroundColor DarkGray
+            } elseif ($nv.Major -lt 525) {
+                Write-Warn2 "NVIDIA driver $($nv.Driver) is older than the 525 minimum Ollama requires for CUDA. Inference will fall back to CPU."
+                Write-Host "    Update at: https://www.nvidia.com/Download/index.aspx" -ForegroundColor DarkGray
+            } else {
+                Write-OK "NVIDIA driver $($nv.Driver) is recent enough for CUDA inference"
+            }
+        }
     }
     Write-OK "Hardware passes minimum to run $MODEL_SMALLEST"
 }
@@ -324,6 +433,14 @@ function Invoke-Detect {
         }) -join " | "
     } catch { $report.GPU = "(detection failed)" }
 
+    $nv = Get-NvidiaDriverInfo
+    if ($nv) {
+        $status = if ($nv.Major -lt 525) { "TOO OLD (need >=525 for CUDA)" } else { "ok" }
+        $report.NvidiaDriver = "$($nv.Driver) ($status)"
+    } else {
+        $report.NvidiaDriver = "not detected"
+    }
+
     Write-Host "`n  Cerberus dependency report" -ForegroundColor Red
     Write-Host "  --------------------------" -ForegroundColor DarkGray
     foreach ($k in $report.Keys) {
@@ -360,18 +477,72 @@ function Ensure-WebView2 {
 
 # ---------- Install: Ollama ----------
 function Ensure-Ollama {
-    if (Test-Command "ollama") { Write-OK "Ollama CLI present"; }
-    else {
-        Write-Step "Installing Ollama for Windows"
+    # Discover the canonical latest version up-front so we can compare against
+    # what's installed and decide between fresh-install / upgrade / skip.
+    $latest = Get-LatestOllamaRelease
+    if ($latest) {
+        Write-Host "    Ollama latest available: v$($latest.Version)" -ForegroundColor DarkGray
+    }
+
+    $installed = Get-InstalledOllamaVersion
+    $needsInstall = -not (Test-Command "ollama")
+    $needsUpgrade = $false
+
+    if (-not $needsInstall -and $latest -and $installed) {
+        if ((Compare-Semver $installed $latest.Version) -lt 0) {
+            $needsUpgrade = $true
+            Write-Step "Upgrading Ollama: v$installed -> v$($latest.Version)"
+        } else {
+            Write-OK "Ollama CLI present (v$installed, up to date)"
+        }
+    } elseif (-not $needsInstall) {
+        Write-OK "Ollama CLI present$(if ($installed) { ' (v' + $installed + ')' })"
+    }
+
+    if ($needsInstall -or $needsUpgrade) {
+        if ($needsInstall) { Write-Step "Installing Ollama for Windows" }
+
+        # Try winget first — it pulls the latest signed package automatically and
+        # handles upgrades cleanly.
+        $wingetTried = $false
         if (Test-WingetReady) {
-            $wargs = @("install", "--id", "Ollama.Ollama", "-e", "--accept-source-agreements", "--accept-package-agreements")
+            $wingetTried = $true
+            $verb = if ($needsUpgrade) { "upgrade" } else { "install" }
+            $wargs = @($verb, "--id", "Ollama.Ollama", "-e", "--accept-source-agreements", "--accept-package-agreements")
             if ($Silent) { $wargs += @("--silent") }
             & winget @wargs
-            if ($LASTEXITCODE -ne 0) { throw "winget install Ollama.Ollama failed with $LASTEXITCODE" }
-        } else {
+            if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1978335212) {
+                # -1978335212 = APPINSTALLER_CLI_ERROR_NO_APPLICABLE_UPDATE_FOUND
+                Write-Warn2 "winget $verb Ollama.Ollama returned $LASTEXITCODE; falling back to direct download"
+                $wingetTried = $false
+            }
+        }
+
+        if (-not $wingetTried) {
             Ensure-WorkDir
             $exe = Join-Path $WorkDir "OllamaSetup.exe"
-            Save-Url -Url $OllamaUrl -Path $exe
+
+            # Prefer the versioned URL from GitHub Releases (immutable + we know
+            # exactly which build we're shipping). Fall back to ollama.com's
+            # always-latest redirect if GitHub is unreachable.
+            $url = if ($latest) { $latest.Url } else { $OllamaUrl }
+            $expectedSha = if ($latest) { Get-OllamaExpectedSha $latest.ShaUrl } else { $null }
+
+            Save-Url -Url $url -Path $exe
+
+            # Verify SHA-256 if we got one from the release. Tampered downloads
+            # are a real risk on networks with broken/intercepted TLS.
+            if ($expectedSha) {
+                $actual = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+                if ($actual -ne $expectedSha) {
+                    Remove-Item $exe -ErrorAction SilentlyContinue
+                    throw "Ollama installer SHA-256 mismatch (expected $expectedSha, got $actual). Aborting."
+                }
+                Write-OK "Verified OllamaSetup.exe SHA-256"
+            } else {
+                Write-Warn2 "Skipping SHA-256 verification (no checksum file available)"
+            }
+
             $oargs = if ($Silent) { @("/SILENT") } else { @() }
             $procParams = @{
                 FilePath = $exe
@@ -382,13 +553,19 @@ function Ensure-Ollama {
             $p = Start-Process @procParams
             if ($p.ExitCode -ne 0) { throw "Ollama installer exit code $($p.ExitCode)" }
         }
+
         # Refresh PATH so we can find ollama.exe in this session.
         $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
                     [System.Environment]::GetEnvironmentVariable("Path", "User")
         if (-not (Test-Command "ollama")) {
             Write-Warn2 "ollama installed but not on PATH for this shell. Open a new terminal afterward."
         } else {
-            Write-OK "Ollama installed"
+            $newVer = Get-InstalledOllamaVersion
+            if ($newVer) {
+                Write-OK "Ollama installed (v$newVer)"
+            } else {
+                Write-OK "Ollama installed"
+            }
         }
     }
 
