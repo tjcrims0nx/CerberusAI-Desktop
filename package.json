@@ -13,21 +13,22 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2.1.1",
-    "@tauri-apps/plugin-dialog": "^2.7.0",
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-shell": "^2.0.1",
     "@types/dompurify": "^3.0.5",
-    "dompurify": "^3.4.2",
+    "dompurify": "^3.4.4",
     "marked": "^18.0.3",
-    "vue": "^3.5.13"
+    "vue": "^3.5.34"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.1.0",
-    "@types/node": "^22.9.0",
-    "@vitejs/plugin-vue": "^5.2.1",
+    "@tauri-apps/cli": "^2.11.2",
+    "@types/node": "^22.19.19",
+    "@vitejs/plugin-vue": "^6.0.7",
+    "esbuild": "^0.28.0",
     "typescript": "~5.6.3",
-    "vite": "^8.0.10",
-    "vue-tsc": "^2.1.10"
+    "vite": "^8.0.13",
+    "vue-tsc": "^2.2.12"
   },
   "engines": {
     "node": ">=18"
