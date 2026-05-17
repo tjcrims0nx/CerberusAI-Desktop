@@ -27,6 +27,7 @@ fn http() -> Result<reqwest::Client, reqwest::Error> {
         return Ok(c.clone());
     }
     let c = reqwest::Client::builder()
+        .user_agent(concat!("CerberusDesktop/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(60 * 60)) // long for first model pull
         .build()?;
@@ -39,11 +40,27 @@ fn http_short() -> Result<reqwest::Client, reqwest::Error> {
         return Ok(c.clone());
     }
     let c = reqwest::Client::builder()
+        .user_agent(concat!("CerberusDesktop/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
         .build()?;
     let _ = HTTP_SHORT_CLIENT.set(c.clone());
     Ok(c)
+}
+
+/// Best-effort lookup of the `ollama` CLI on PATH. Returns the resolved
+/// path if found, so callers can fail fast with a clear message before
+/// kicking off a multi-GB download.
+async fn which_ollama() -> Option<std::path::PathBuf> {
+    let bin = if cfg!(windows) { "ollama.exe" } else { "ollama" };
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(bin);
+        if tokio::fs::metadata(&candidate).await.is_ok() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 // ─── Cloud: API-key verification only ──────────────────────────────────────
@@ -272,6 +289,42 @@ pub async fn pull_model(
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
+    // Ollama lowercases all model names when it stores them, so any case
+    // mismatch between the API id (e.g. `Arbiter-GL9b`) and what we tell
+    // Ollama will leave the frontend's `name === "Arbiter-GL9b"` comparison
+    // failing forever — the dropdown thinks the pull never finished and
+    // re-triggers it. Normalize once here so the whole pipeline agrees.
+    let ollama_model_name = name.to_lowercase();
+
+    // Fail fast: if the ollama daemon isn't running or the CLI isn't on PATH,
+    // there's no point starting a multi-GB download.
+    {
+        let local = local_status().await;
+        if !local.running {
+            let detail = local.error.unwrap_or_else(|| "ollama daemon not running on 127.0.0.1:11434".to_string());
+            let msg = format!(
+                "Ollama is not running. Open the Ollama app (or run `ollama serve`), then try again.\n\
+                 Detail: {detail}\n\
+                 Don't have Ollama? Run the Cerberus installer again: irm https://cerberusai.dev/get | iex"
+            );
+            let _ = out.send(PullProgress {
+                status: format!("error: {msg}"),
+                completed: None, total: None, done: true, error: Some(msg.clone()),
+            });
+            return Err(anyhow::anyhow!(msg));
+        }
+        if which_ollama().await.is_none() {
+            let msg = "`ollama` CLI not found on PATH. Install Ollama from https://ollama.com/download \
+                       (or re-run the Cerberus bootstrapper: irm https://cerberusai.dev/get | iex), \
+                       then open a fresh terminal so PATH refreshes.".to_string();
+            let _ = out.send(PullProgress {
+                status: format!("error: {msg}"),
+                completed: None, total: None, done: true, error: Some(msg.clone()),
+            });
+            return Err(anyhow::anyhow!(msg));
+        }
+    }
+
     let c = http()?;
 
     // 1. Pick the smallest .gguf in the model's directory.
@@ -361,6 +414,7 @@ pub async fn pull_model(
     // One shared client so all 8 workers reuse TLS sessions and the connection pool.
     let chunk_client = Arc::new(
         reqwest::Client::builder()
+            .user_agent(concat!("CerberusDesktop/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(3600))
             .build()?
@@ -500,12 +554,12 @@ pub async fn pull_model(
 
     let mut child = match tokio::process::Command::new("ollama")
         .arg("create")
-        .arg(&name)
+        .arg(&ollama_model_name)
         .arg("-f")
         .arg(&modelfile_path)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn() 
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
     {
         Ok(c) => c,
         Err(e) => {
@@ -519,17 +573,42 @@ pub async fn pull_model(
         }
     };
 
-    let status = child.wait().await?;
+    let create_output = match child.wait_with_output().await {
+        Ok(o) => o,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&modelfile_path).await;
+            let msg = format!("Failed waiting on `ollama create`: {e}");
+            let _ = out.send(PullProgress {
+                status: format!("error: {}", msg),
+                completed: None, total: None, done: true, error: Some(msg.clone()),
+            });
+            return Err(anyhow::anyhow!(msg));
+        }
+    };
     let _ = tokio::fs::remove_file(&modelfile_path).await;
 
-    if !status.success() {
-        let msg = format!("ollama create failed with status {status}");
+    if !create_output.status.success() {
+        let stderr = String::from_utf8_lossy(&create_output.stderr).trim().to_string();
+        let stdout = String::from_utf8_lossy(&create_output.stdout).trim().to_string();
+        // Surface whatever Ollama actually said. This is the difference between
+        // "didn't work" and "GGUF metadata invalid" / "permission denied" / etc.
+        let detail = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("ollama create exited with {}", create_output.status)
+        };
+        let msg = format!("ollama create failed: {detail}");
         let _ = out.send(PullProgress {
-            status: format!("error: {}", msg),
+            status: format!("error: {msg}"),
             completed: None, total: None, done: true, error: Some(msg.clone()),
         });
         return Err(anyhow::anyhow!(msg));
     }
+
+    // Free disk space — we no longer need the GGUF blob, Ollama has its own copy.
+    let _ = tokio::fs::remove_file(&temp_path).await;
 
     let _ = out.send(PullProgress {
         status: "success".into(),

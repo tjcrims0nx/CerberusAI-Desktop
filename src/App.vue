@@ -39,6 +39,16 @@ const STORAGE_KEY = "cerberus.chats.v1";
 const MODEL_KEY = "cerberus.model.v1";
 const APIKEY_KEY = "cerberus.apiKey.v1";
 
+// Ollama lowercases all model names when it stores them via `ollama create`.
+// Our cloud allowlist returns mixed-case ids (e.g. `Arbiter-GL9b`). Without
+// case-insensitive comparison the dropdown thinks the model is still missing
+// after a successful pull and re-triggers it forever. Use this everywhere
+// we compare a local Ollama model name against an allowlist id.
+function modelKey(name: string | null | undefined): string {
+  if (!name) return "";
+  return name.replace(/:latest$/, "").toLowerCase();
+}
+
 const chats = ref<Chat[]>([]);
 const activeId = ref<string | null>(null);
 const models = ref<OllamaModel[]>([]);
@@ -269,10 +279,10 @@ const pulling = ref<{ name: string; pct: number; status: string } | null>(null);
 // Drives the dropdown so users can pick undownloaded models and have them
 // auto-pulled (LM Studio-style).
 const allModelChoices = computed(() => {
-  const local = new Set(models.value.map((m) => m.name.replace(/:latest$/, '')));
+  const local = new Set(models.value.map((m) => modelKey(m.name)));
   return allowedModels.value.map((m) => ({ 
     name: m.id, 
-    downloaded: local.has(m.id),
+    downloaded: local.has(modelKey(m.id)),
     description: m.description,
     quants: m.quants
   }));
@@ -360,7 +370,7 @@ function deleteChat(id: string, evt: Event) {
 watch(selectedModel, (v) => {
   // Only persist once the model is actually present locally — otherwise a
   // pending-download choice would be remembered before it ever arrived.
-  if (v && models.value.some((m) => m.name.replace(/:latest$/, '') === v)) {
+  if (v && models.value.some((m) => modelKey(m.name) === modelKey(v))) {
     localStorage.setItem(MODEL_KEY, v);
   }
 });
@@ -368,8 +378,8 @@ watch(selectedModel, (v) => {
 // LM Studio-style: picking an undownloaded model auto-triggers the pull.
 watch(selectedModel, async (v) => {
   if (!v) return;
-  if (models.value.some((m) => m.name.replace(/:latest$/, '') === v)) return;
-  if (!allowedModels.value.some((m) => m.id === v)) return;
+  if (models.value.some((m) => modelKey(m.name) === modelKey(v))) return;
+  if (!allowedModels.value.some((m) => modelKey(m.id) === modelKey(v))) return;
   if (pulling.value) return;
   await pullModel(v);
 });
@@ -393,16 +403,16 @@ async function refreshAllowedModels() {
 async function refreshModels() {
   try {
     const list = await invoke<OllamaModel[]>("list_models");
-    const allowed = new Set(allowedModels.value.map((m) => m.id));
+    const allowed = new Set(allowedModels.value.map((m) => modelKey(m.id)));
     const filtered = allowed.size > 0
-      ? list.filter((m) => allowed.has(m.name.replace(/:latest$/, '')))
+      ? list.filter((m) => allowed.has(modelKey(m.name)))
       : [];
     models.value = filtered;
 
     if (
       selectedModel.value &&
-      !filtered.find((m) => m.name.replace(/:latest$/, '') === selectedModel.value) &&
-      !allowedModels.value.some((m) => m.id === selectedModel.value)
+      !filtered.find((m) => modelKey(m.name) === modelKey(selectedModel.value)) &&
+      !allowedModels.value.some((m) => modelKey(m.id) === modelKey(selectedModel.value))
     ) {
       selectedModel.value = "";
     }
@@ -524,7 +534,7 @@ async function send() {
   if (!text || streaming.value || !activeChat.value || !selectedModel.value) return;
   if (!apiKeyVerified.value || !apiKey.value) return;
   if (pulling.value) return;
-  if (!models.value.some((m) => m.name === selectedModel.value || m.name.replace(/:latest$/, '') === selectedModel.value)) return;
+  if (!models.value.some((m) => modelKey(m.name) === modelKey(selectedModel.value))) return;
   if (!localStatus.value.running) {
     await checkLocal();
     if (!localStatus.value.running) return;
@@ -595,7 +605,9 @@ async function send() {
 
   try {
     await invoke("chat_stream", {
-      model: selectedModel.value,
+      // Ollama stores model names lowercase. Use modelKey() so a UI value
+      // like "Arbiter-GL9b" is dispatched as "arbiter-gl9b".
+      model: modelKey(selectedModel.value),
       messages: messagesToSend,
       onEvent: channel,
     });
@@ -790,7 +802,7 @@ onMounted(async () => {
             <div class="model-card-main">
               <div class="model-card-icon">{{ m.name.charAt(0).toUpperCase() }}</div>
               <div class="model-card-info">
-                <div class="model-card-name" :title="m.name">{{ m.name.replace(/:latest$/, '') }}</div>
+                <div class="model-card-name" :title="m.name">{{ modelKey(m.name) }}</div>
                 <div class="model-card-meta">
                   <span class="model-tag">{{ formatBytes(m.size) }}</span>
                   <span v-if="m.details?.quantization_level" class="model-tag quant">{{ m.details.quantization_level }}</span>
@@ -802,8 +814,8 @@ onMounted(async () => {
             <div class="model-card-actions">
               <button
                 class="model-action-btn use"
-                v-if="selectedModel !== m.name.replace(/:latest$/, '')"
-                @click="selectedModel = m.name.replace(/:latest$/, ''); showFileManager = false"
+                v-if="modelKey(selectedModel) !== modelKey(m.name)"
+                @click="selectedModel = modelKey(m.name); showFileManager = false"
                 title="Use this model"
               >USE</button>
               <span v-else class="model-active-badge">ACTIVE</span>
@@ -1185,7 +1197,7 @@ onMounted(async () => {
           <button
             v-else
             class="send-btn"
-            :disabled="!draft.trim() || streaming || !localStatus.running || cloudStatus.kind !== 'ok' || !selectedModel || !!pulling || !models.some((m) => m.name.replace(/:latest$/, '') === selectedModel)"
+            :disabled="!draft.trim() || streaming || !localStatus.running || cloudStatus.kind !== 'ok' || !selectedModel || !!pulling || !models.some((m) => modelKey(m.name) === modelKey(selectedModel))"
             @click="send"
             aria-label="Send"
           >
