@@ -244,6 +244,28 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(PullState(Mutex::new(None)))
         .manage(ChatState(Mutex::new(None)))
+        .setup(|_app| {
+            // Log Ollama daemon version once at startup so it shows up in
+            // crash reports and support tickets without depending on the user
+            // opening the right UI panel.
+            tauri::async_runtime::spawn(async {
+                let s = ollama::local_status().await;
+                if s.running {
+                    log::info!(
+                        "ollama daemon detected: version={} (cerberus desktop v{})",
+                        s.version.as_deref().unwrap_or("unknown"),
+                        env!("CARGO_PKG_VERSION")
+                    );
+                } else {
+                    log::warn!(
+                        "ollama daemon NOT running on startup ({}); cerberus desktop v{}",
+                        s.error.as_deref().unwrap_or("no detail"),
+                        env!("CARGO_PKG_VERSION")
+                    );
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             check_api,
             list_allowed_models,

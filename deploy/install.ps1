@@ -289,6 +289,30 @@ function Get-PrimaryGpu {
     } catch { return $null }
 }
 
+# Probe nvidia-smi for driver version + CUDA support. Returns $null when no
+# NVIDIA driver is present (the user may still have an NVIDIA card but with
+# missing/broken drivers, which we want to warn about).
+#
+# Ollama 0.4+ requires NVIDIA driver >= 525 for CUDA support. Driver < 525
+# means inference silently falls back to CPU regardless of the GPU.
+function Get-NvidiaDriverInfo {
+    if (-not (Test-Command "nvidia-smi")) { return $null }
+    try {
+        $line = & nvidia-smi --query-gpu=driver_version,name --format=csv,noheader,nounits 2>$null | Select-Object -First 1
+        if (-not $line) { return $null }
+        $parts = $line.Split(",") | ForEach-Object { $_.Trim() }
+        if ($parts.Count -lt 1) { return $null }
+        $driver = $parts[0]
+        $major = 0
+        if ($driver -match '^(\d+)') { $major = [int]$Matches[1] }
+        return [pscustomobject]@{
+            Driver = $driver
+            Major  = $major
+            Name   = if ($parts.Count -ge 2) { $parts[1] } else { $null }
+        }
+    } catch { return $null }
+}
+
 function Get-FreeDiskGB {
     param([string]$Drive = $env:SystemDrive)
     try {
@@ -354,6 +378,22 @@ function Test-MinimumHardware {
         Write-Warn2 "No GPU with >=$REC_VRAM_GB GB VRAM detected. Inference will run on CPU at ~3-8 tokens/sec."
     } else {
         Write-OK "GPU acceleration available ($($gpu.Name), $vramGB GB VRAM)"
+
+        # NVIDIA driver sanity check. A user with an NVIDIA card but
+        # missing/old drivers will see Ollama "use GPU" in the UI and then
+        # silently fall back to CPU at runtime — the worst kind of bug.
+        if ($gpu.Name -match "NVIDIA|GeForce|RTX|GTX|Quadro|Tesla") {
+            $nv = Get-NvidiaDriverInfo
+            if (-not $nv) {
+                Write-Warn2 "NVIDIA GPU detected but nvidia-smi is missing. CUDA driver may not be installed; inference will fall back to CPU."
+                Write-Host "    Get the latest driver: https://www.nvidia.com/Download/index.aspx" -ForegroundColor DarkGray
+            } elseif ($nv.Major -lt 525) {
+                Write-Warn2 "NVIDIA driver $($nv.Driver) is older than the 525 minimum Ollama requires for CUDA. Inference will fall back to CPU."
+                Write-Host "    Update at: https://www.nvidia.com/Download/index.aspx" -ForegroundColor DarkGray
+            } else {
+                Write-OK "NVIDIA driver $($nv.Driver) is recent enough for CUDA inference"
+            }
+        }
     }
     Write-OK "Hardware passes minimum to run $MODEL_SMALLEST"
 }
@@ -392,6 +432,14 @@ function Invoke-Detect {
             "$($_.Name)$vram"
         }) -join " | "
     } catch { $report.GPU = "(detection failed)" }
+
+    $nv = Get-NvidiaDriverInfo
+    if ($nv) {
+        $status = if ($nv.Major -lt 525) { "TOO OLD (need >=525 for CUDA)" } else { "ok" }
+        $report.NvidiaDriver = "$($nv.Driver) ($status)"
+    } else {
+        $report.NvidiaDriver = "not detected"
+    }
 
     Write-Host "`n  Cerberus dependency report" -ForegroundColor Red
     Write-Host "  --------------------------" -ForegroundColor DarkGray

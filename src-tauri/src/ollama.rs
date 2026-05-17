@@ -444,6 +444,11 @@ pub async fn pull_model(
             let mut f = tokio::fs::OpenOptions::new()
                 .write(true).open(&dl_path).await?;
             f.seek(std::io::SeekFrom::Start(byte_start)).await?;
+            // Per-chunk inactivity timeout: if the upstream sends no bytes for
+            // STALL_TIMEOUT, fail this chunk so the outer error path can
+            // surface a clean message instead of letting the user stare at a
+            // frozen progress bar for the hour-long overall timeout.
+            const STALL_TIMEOUT: Duration = Duration::from_secs(30);
             loop {
                 tokio::select! {
                     biased;
@@ -452,11 +457,17 @@ pub async fn pull_model(
                             return Err(anyhow::anyhow!("cancelled"));
                         }
                     }
-                    chunk = stream.next() => {
+                    chunk = tokio::time::timeout(STALL_TIMEOUT, stream.next()) => {
                         match chunk {
-                            None => break,
-                            Some(Err(e)) => return Err(e.into()),
-                            Some(Ok(bytes)) => {
+                            Err(_) => {
+                                return Err(anyhow::anyhow!(
+                                    "chunk {i} stalled (no data for {}s); upstream may be down",
+                                    STALL_TIMEOUT.as_secs()
+                                ));
+                            }
+                            Ok(None) => break,
+                            Ok(Some(Err(e))) => return Err(e.into()),
+                            Ok(Some(Ok(bytes))) => {
                                 dl_done.fetch_add(bytes.len() as u64, Ordering::Relaxed);
                                 f.write_all(&bytes).await?;
                             }
