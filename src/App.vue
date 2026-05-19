@@ -274,7 +274,41 @@ const verifying = ref<boolean>(false);
 const verifyError = ref<string>("");
 
 // Active model pull
-const pulling = ref<{ name: string; pct: number; status: string } | null>(null);
+const pulling = ref<{
+  name: string;
+  pct: number;
+  status: string;
+  /** Bytes/sec averaged over the last few seconds */
+  bps?: number;
+  /** Seconds remaining (rough estimate) */
+  eta?: number;
+  /** True if this download picked up where a previous run left off */
+  resumed?: boolean;
+} | null>(null);
+
+/** Format a bytes/sec value like 12.4 MB/s. */
+function fmtRate(bps?: number): string {
+  if (!bps || bps <= 0) return "";
+  if (bps >= 1024 * 1024) return (bps / 1024 / 1024).toFixed(1) + " MB/s";
+  if (bps >= 1024) return (bps / 1024).toFixed(1) + " KB/s";
+  return `${bps} B/s`;
+}
+
+/** Format remaining seconds as 1h 12m / 4m 30s / 25s. */
+function fmtEta(secs?: number): string {
+  if (secs === undefined || secs <= 0) return "";
+  if (secs >= 3600) {
+    const h = Math.floor(secs / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return `${h}h ${m}m`;
+  }
+  if (secs >= 60) {
+    const m = Math.floor(secs / 60);
+    const s = secs % 60;
+    return `${m}m ${s}s`;
+  }
+  return `${secs}s`;
+}
 
 // Every allowlisted model, paired with whether it's already pulled locally.
 // Drives the dropdown so users can pick undownloaded models and have them
@@ -637,6 +671,9 @@ interface PullProgress {
   total?: number;
   done: boolean;
   error?: string;
+  bytes_per_second?: number;
+  eta_seconds?: number;
+  resumed?: boolean;
 }
 
 async function cancelDownload() {
@@ -651,7 +688,14 @@ async function pullModel(name: string, quant?: string) {
   const channel = new Channel<PullProgress>();
   channel.onmessage = (p) => {
     const pct = p.total && p.completed ? Math.floor((p.completed / p.total) * 100) : pulling.value?.pct ?? 0;
-    pulling.value = { name, pct, status: p.status || "downloading" };
+    pulling.value = {
+      name: displayName,
+      pct,
+      status: p.status || "downloading",
+      bps: p.bytes_per_second,
+      eta: p.eta_seconds,
+      resumed: p.resumed ?? pulling.value?.resumed,
+    };
     if (p.done) {
       const failed = !!p.error;
       pulling.value = null;
@@ -663,10 +707,11 @@ async function pullModel(name: string, quant?: string) {
     }
   };
   try {
-    await invoke("pull_model", { name, quant, onEvent: channel });
+    // Forward the API key so the gateway can later require it on /models/*.
+    await invoke("pull_model", { name, quant, apiKey: apiKey.value || undefined, onEvent: channel });
   } catch (e) {
-    pulling.value = { name, pct: 0, status: `error: ${String(e)}` };
-    setTimeout(() => { if (pulling.value?.name === name) pulling.value = null; }, 4000);
+    pulling.value = { name: displayName, pct: 0, status: `error: ${String(e)}` };
+    setTimeout(() => { if (pulling.value?.name === displayName) pulling.value = null; }, 4000);
   }
 }
 
@@ -1006,7 +1051,10 @@ onMounted(async () => {
     <div class="download-bar-text">
       <span class="download-bar-label">DOWNLOADING</span>
       <code class="download-bar-name" :title="pulling.name">{{ pulling.name }}</code>
+      <span v-if="pulling.resumed" class="download-bar-resumed" title="Resumed previous download">↻</span>
       <span class="download-bar-status">{{ pulling.status }}</span>
+      <span v-if="pulling.bps" class="download-bar-rate">{{ fmtRate(pulling.bps) }}</span>
+      <span v-if="pulling.eta && pulling.eta > 0" class="download-bar-eta">ETA {{ fmtEta(pulling.eta) }}</span>
       <span class="download-bar-pct">{{ pulling.pct }}%</span>
       <button class="download-bar-cancel" title="Cancel download" @click="cancelDownload">✕</button>
     </div>
@@ -2023,6 +2071,19 @@ onMounted(async () => {
 .download-bar-pct {
   font-weight: 800;
   letter-spacing: 1px;
+  flex-shrink: 0;
+}
+.download-bar-rate,
+.download-bar-eta {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.7);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.download-bar-resumed {
+  color: rgba(255, 200, 100, 0.95);
+  font-size: 0.95rem;
   flex-shrink: 0;
 }
 .download-bar-cancel {

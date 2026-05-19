@@ -334,9 +334,24 @@ struct DirEntry {
     kind: String,
 }
 
+/// Persisted resume metadata kept next to the partially-downloaded GGUF.
+/// On every chunk completion we rewrite this file. If the app is killed
+/// mid-download, the next pull_model invocation reads this and resumes only
+/// the unfinished chunks.
+#[derive(Debug, Serialize, Deserialize)]
+struct ResumeSidecar {
+    /// Public URL the bytes came from (used to invalidate stale state when
+    /// the chosen quant or filename changes between runs).
+    url: String,
+    /// Total expected bytes per the server's Content-Length.
+    total: u64,
+    /// Boolean "is this chunk fully written" flag for each of the CHUNKS slices.
+    /// Index N corresponds to byte range [N*chunk_size, (N+1)*chunk_size).
+    completed_chunks: Vec<bool>,
+    chunk_size: u64,
+}
 
-
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Default)]
 pub struct PullProgress {
     pub status: String,
     pub completed: Option<u64>,
@@ -344,6 +359,16 @@ pub struct PullProgress {
     pub done: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Instantaneous transfer rate (bytes/sec) over the last sample window.
+    /// Frontend can format this as MB/s for the user.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_per_second: Option<u64>,
+    /// Estimated remaining seconds based on `bytes_per_second`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_seconds: Option<u64>,
+    /// Set on the first event of a resumed download so the UI can show a hint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resumed: Option<bool>,
 }
 
 /// Download the smallest GGUF for `name` from llm.cerberusai.dev and import
@@ -353,6 +378,7 @@ pub struct PullProgress {
 pub async fn pull_model(
     name: String,
     quant: Option<String>,
+    api_key: Option<String>,
     app_dir: std::path::PathBuf,
     out: Channel<PullProgress>,
     mut cancel: tokio::sync::watch::Receiver<bool>,
@@ -382,6 +408,7 @@ pub async fn pull_model(
             let _ = out.send(PullProgress {
                 status: format!("error: {msg}"),
                 completed: None, total: None, done: true, error: Some(msg.clone()),
+                ..Default::default()
             });
             return Err(anyhow::anyhow!(msg));
         }
@@ -392,6 +419,7 @@ pub async fn pull_model(
             let _ = out.send(PullProgress {
                 status: format!("error: {msg}"),
                 completed: None, total: None, done: true, error: Some(msg.clone()),
+                ..Default::default()
             });
             return Err(anyhow::anyhow!(msg));
         }
@@ -403,15 +431,21 @@ pub async fn pull_model(
     let _ = out.send(PullProgress {
         status: "looking up model".into(),
         completed: None, total: None, done: false, error: None,
+        bytes_per_second: None, eta_seconds: None, resumed: None,
     });
     let listing_url = format!("{LLM_FILES_BASE}/api/models/{name}/");
-    let resp = c.get(&listing_url).send().await?;
+    let mut listing_req = c.get(&listing_url);
+    if let Some(k) = &api_key {
+        listing_req = listing_req.header("Authorization", format!("Bearer {k}"));
+    }
+    let resp = listing_req.send().await?;
     if !resp.status().is_success() {
         let status = resp.status();
         let _ = out.send(PullProgress {
             status: format!("error: listing returned {status}"),
             completed: None, total: None, done: true,
             error: Some(format!("HTTP {status}")),
+            ..Default::default()
         });
         return Err(anyhow::anyhow!("listing HTTP {status}"));
     }
@@ -441,6 +475,7 @@ pub async fn pull_model(
                 status: format!("error: {}", msg),
                 completed: None, total: None, done: true,
                 error: Some(msg.clone()),
+                ..Default::default()
             });
             return Err(anyhow::anyhow!(msg));
         }
@@ -464,23 +499,71 @@ pub async fn pull_model(
         let _ = out.send(PullProgress {
             status: format!("error: {}", msg),
             completed: None, total: None, done: true, error: Some(msg.clone()),
+            ..Default::default()
         });
         return Err(anyhow::anyhow!(msg));
     }
     
     let temp_path = models_dir.join(format!("{safe_name}-{}", chosen.name));
+    let sidecar_path = temp_path.with_extension("part.json");
 
-    // Pre-allocate the file so all workers can seek+write concurrently.
-    {
+    const CHUNKS: u64 = 8;
+    let chunk_size = (total + CHUNKS - 1) / CHUNKS;
+
+    // Resume support — if a sidecar matches this URL & total, reuse the file
+    // and skip already-completed chunks. Otherwise start fresh.
+    let mut completed_chunks: Vec<bool> = vec![false; CHUNKS as usize];
+    let mut resumed_from_disk = false;
+    if let Ok(bytes) = tokio::fs::read(&sidecar_path).await {
+        if let Ok(side) = serde_json::from_slice::<ResumeSidecar>(&bytes) {
+            let file_ok = match tokio::fs::metadata(&temp_path).await {
+                Ok(meta) => meta.len() == side.total,
+                Err(_) => false,
+            };
+            if file_ok && side.url == url && side.total == total && side.chunk_size == chunk_size
+                && side.completed_chunks.len() == CHUNKS as usize
+            {
+                completed_chunks = side.completed_chunks;
+                resumed_from_disk = completed_chunks.iter().any(|c| *c);
+            }
+        }
+    }
+
+    if !resumed_from_disk {
+        // Fresh download — wipe any stale temp file & sidecar then preallocate.
+        let _ = tokio::fs::remove_file(&sidecar_path).await;
         let f = tokio::fs::OpenOptions::new()
             .write(true).create(true).truncate(true)
             .open(&temp_path).await?;
         f.set_len(total).await?;
+    } else {
+        let already: u64 = completed_chunks.iter().enumerate()
+            .filter(|(_, c)| **c)
+            .map(|(i, _)| {
+                let s = i as u64 * chunk_size;
+                let e = ((i as u64 + 1) * chunk_size).min(total);
+                e - s
+            }).sum();
+        let _ = out.send(PullProgress {
+            status: format!("resuming previous download ({already} bytes already on disk)"),
+            completed: Some(already),
+            total: Some(total),
+            done: false, error: None,
+            bytes_per_second: None, eta_seconds: None,
+            resumed: Some(true),
+        });
     }
 
-    const CHUNKS: u64 = 8;
-    let chunk_size = (total + CHUNKS - 1) / CHUNKS;
-    let completed = Arc::new(AtomicU64::new(0));
+    // Sum bytes already on disk so the progress counter starts at the right place.
+    let already_bytes: u64 = completed_chunks.iter().enumerate()
+        .filter(|(_, c)| **c)
+        .map(|(i, _)| {
+            let s = i as u64 * chunk_size;
+            let e = ((i as u64 + 1) * chunk_size).min(total);
+            e - s
+        }).sum();
+    let completed = Arc::new(AtomicU64::new(already_bytes));
+    let chunk_done_flags = Arc::new(tokio::sync::Mutex::new(completed_chunks.clone()));
     let mut handles: Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>> = Vec::new();
 
     // One shared client so all 8 workers reuse TLS sessions and the connection pool.
@@ -495,19 +578,31 @@ pub async fn pull_model(
     for i in 0..CHUNKS {
         let byte_start = i * chunk_size;
         if byte_start >= total { break; }
+        if completed_chunks[i as usize] {
+            // Already fully written from a prior run — skip.
+            continue;
+        }
         let byte_end = ((i + 1) * chunk_size).min(total) - 1;
         let dl_url = url.clone();
         let dl_path = temp_path.clone();
         let dl_done = completed.clone();
         let mut dl_cancel = cancel.clone();
         let client = chunk_client.clone();
+        let auth_header = api_key.clone().map(|k| format!("Bearer {k}"));
+        let sidecar = sidecar_path.clone();
+        let flags = chunk_done_flags.clone();
+        let total_clone = total;
+        let chunk_size_clone = chunk_size;
+        let url_clone = url.clone();
 
         handles.push(tokio::spawn(async move {
-            let resp = client
+            let mut req = client
                 .get(&dl_url)
-                .header("Range", format!("bytes={byte_start}-{byte_end}"))
-                .send()
-                .await?;
+                .header("Range", format!("bytes={byte_start}-{byte_end}"));
+            if let Some(h) = &auth_header {
+                req = req.header("Authorization", h);
+            }
+            let resp = req.send().await?;
             let status = resp.status();
             if status.as_u16() != 206 && !status.is_success() {
                 return Err(anyhow::anyhow!("chunk {i} HTTP {status}"));
@@ -548,21 +643,64 @@ pub async fn pull_model(
                 }
             }
             f.flush().await?;
+            // Mark this chunk done in the sidecar so a future restart skips it.
+            {
+                let mut g = flags.lock().await;
+                g[i as usize] = true;
+                let snapshot = ResumeSidecar {
+                    url: url_clone,
+                    total: total_clone,
+                    chunk_size: chunk_size_clone,
+                    completed_chunks: g.clone(),
+                };
+                if let Ok(bytes) = serde_json::to_vec(&snapshot) {
+                    let _ = tokio::fs::write(&sidecar, bytes).await;
+                }
+            }
             Ok(())
         }));
     }
 
     // Report progress every 500 ms; stop on cancel or when all chunks finish.
+    // We track a 5-sample rolling window for byte-rate so the displayed
+    // MB/s isn't jumpy from individual TCP socket bursts.
     let mut cancelled = false;
+    let mut samples: std::collections::VecDeque<(std::time::Instant, u64)> =
+        std::collections::VecDeque::with_capacity(8);
+    samples.push_back((std::time::Instant::now(), already_bytes));
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(500)) => {
                 let current = completed.load(Ordering::Relaxed);
+                let now = std::time::Instant::now();
+                samples.push_back((now, current));
+                while samples.len() > 6 {
+                    samples.pop_front();
+                }
+                let (bps, eta) = if let (Some((t0, b0)), Some((t1, b1))) =
+                    (samples.front(), samples.back())
+                {
+                    let secs = t1.duration_since(*t0).as_secs_f64().max(0.001);
+                    let delta = b1.saturating_sub(*b0) as f64;
+                    let rate = (delta / secs).max(0.0) as u64;
+                    let remaining = total.saturating_sub(current);
+                    let eta = if rate > 0 {
+                        Some(remaining / rate.max(1))
+                    } else {
+                        None
+                    };
+                    (Some(rate), eta)
+                } else {
+                    (None, None)
+                };
                 let _ = out.send(PullProgress {
                     status: "downloading".into(),
                     completed: Some(current),
                     total: Some(total),
                     done: false, error: None,
+                    bytes_per_second: bps,
+                    eta_seconds: eta,
+                    resumed: None,
                 });
                 if handles.iter().all(|h| h.is_finished()) { break; }
             }
@@ -589,11 +727,17 @@ pub async fn pull_model(
     }
 
     if cancelled || !errors.is_empty() {
-        let _ = tokio::fs::remove_file(&temp_path).await;
+        // On cancel, keep the temp file + sidecar so the user can resume next time.
+        // On hard error, wipe both so the next attempt is clean.
+        if !cancelled {
+            let _ = tokio::fs::remove_file(&temp_path).await;
+            let _ = tokio::fs::remove_file(&sidecar_path).await;
+        }
         if cancelled {
             let _ = out.send(PullProgress {
                 status: "cancelled".into(),
                 completed: None, total: None, done: true, error: None,
+                ..Default::default()
             });
             return Ok(());
         }
@@ -602,6 +746,7 @@ pub async fn pull_model(
             status: format!("error: {msg}"),
             completed: None, total: None, done: true,
             error: Some(msg.clone()),
+            ..Default::default()
         });
         return Err(anyhow::anyhow!("download errors: {msg}"));
     }
@@ -611,12 +756,14 @@ pub async fn pull_model(
         completed: Some(total),
         total: Some(total),
         done: false, error: None,
+        ..Default::default()
     });
 
     // 3. Hand the GGUF to local Ollama via the CLI `ollama create` command.
     let _ = out.send(PullProgress {
         status: "importing into ollama (this may take a minute)...".into(),
         completed: None, total: None, done: false, error: None,
+        ..Default::default()
     });
     
     let modelfile_path = temp_path.with_extension("Modelfile");
@@ -631,6 +778,7 @@ pub async fn pull_model(
         let _ = out.send(PullProgress {
             status: format!("error: {msg}"),
             completed: None, total: None, done: true, error: Some(msg.clone()),
+            ..Default::default()
         });
         return Err(anyhow::anyhow!(msg));
     }
@@ -651,6 +799,7 @@ pub async fn pull_model(
             let _ = out.send(PullProgress {
                 status: format!("error: {}", msg),
                 completed: None, total: None, done: true, error: Some(msg.clone()),
+                ..Default::default()
             });
             return Err(anyhow::anyhow!(msg));
         }
@@ -664,6 +813,7 @@ pub async fn pull_model(
             let _ = out.send(PullProgress {
                 status: format!("error: {}", msg),
                 completed: None, total: None, done: true, error: Some(msg.clone()),
+                ..Default::default()
             });
             return Err(anyhow::anyhow!(msg));
         }
@@ -686,16 +836,19 @@ pub async fn pull_model(
         let _ = out.send(PullProgress {
             status: format!("error: {msg}"),
             completed: None, total: None, done: true, error: Some(msg.clone()),
+            ..Default::default()
         });
         return Err(anyhow::anyhow!(msg));
     }
 
     // Free disk space — we no longer need the GGUF blob, Ollama has its own copy.
     let _ = tokio::fs::remove_file(&temp_path).await;
+    let _ = tokio::fs::remove_file(&sidecar_path).await;
 
     let _ = out.send(PullProgress {
         status: "success".into(),
         completed: None, total: None, done: true, error: None,
+        ..Default::default()
     });
     Ok(())
 }

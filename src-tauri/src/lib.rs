@@ -88,6 +88,7 @@ struct ChatState(Mutex<Option<watch::Sender<bool>>>);
 async fn pull_model(
     name: String,
     quant: Option<String>,
+    api_key: Option<String>,
     on_event: Channel<ollama::PullProgress>,
     state: tauri::State<'_, PullState>,
     app: tauri::AppHandle,
@@ -95,7 +96,7 @@ async fn pull_model(
     let (tx, rx) = watch::channel(false);
     *state.0.lock().await = Some(tx);
     let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let result = ollama::pull_model(name, quant, app_dir, on_event, rx).await;
+    let result = ollama::pull_model(name, quant, api_key, app_dir, on_event, rx).await;
     *state.0.lock().await = None;
     result.map_err(|e| e.to_string())
 }
