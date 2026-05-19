@@ -3,6 +3,29 @@ import requests
 import json
 import argparse
 import sys
+import re
+from urllib.parse import urlparse, urlunparse
+
+def build_validated_url(base_url: str) -> str:
+    try:
+        # Minimal path validation (do this before urlparse, since urlparse does not normalize dot-segments).
+        if "/../" in base_url or re.search(r"/%2e%2e/", base_url, re.IGNORECASE):
+            raise ValueError("Invalid path")
+        
+        parsed = urlparse(base_url)
+        
+        # Protocol + host checks
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError("Invalid protocol")
+        if not parsed.hostname:
+            raise ValueError("Invalid host")
+        allowed_domains = ["example.com"]  # add your allowed domains here
+        if parsed.hostname.lower() not in allowed_domains:
+            raise ValueError("Invalid host")
+        
+        return urlunparse(parsed)
+    except Exception:
+        raise ValueError("Invalid URL")
 
 def benchmark_api(url, model, prompt, max_tokens=512, ttft_ceiling=None):
     headers = {
@@ -24,7 +47,8 @@ def benchmark_api(url, model, prompt, max_tokens=512, ttft_ceiling=None):
 
     print(f"Sending request to {url}...")
     try:
-        response = requests.post(url, headers=headers, json=data, stream=True)
+        validated_url = build_validated_url(url)
+        response = requests.post(validated_url, headers=headers, json=data, stream=True)
         response.raise_for_status()
 
         for line in response.iter_lines():
