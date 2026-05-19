@@ -17,6 +17,12 @@ export interface AllowedModel {
   id: string;
   description: string;
   quants: string;
+  /**
+   * Per-quant on-disk file size in bytes, parsed from the CDN listing.
+   * Empty if the listing couldn't be fetched. Used to flag quants that
+   * won't fit on the user's GPU before they pull.
+   */
+  quant_sizes?: Record<string, number>;
 }
 
 export interface OllamaModel {

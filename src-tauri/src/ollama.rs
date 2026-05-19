@@ -136,6 +136,12 @@ pub struct AllowedModel {
     pub id: String,
     pub description: String,
     pub quants: String,
+    /// Per-quant on-disk file size in bytes, parsed from the CDN listing.
+    /// Map key is the quant label (e.g. "Q4_K_M"). Empty if the listing
+    /// couldn't be fetched. The frontend uses this to flag quants that
+    /// won't fit on the user's GPU before they pull.
+    #[serde(default)]
+    pub quant_sizes: std::collections::HashMap<String, u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,14 +186,28 @@ pub async fn list_allowed(api_key: &str) -> Result<Vec<AllowedModel>, anyhow::Er
     for m in body.data {
         let client = c.clone();
         handles.push(tokio::spawn(async move {
-            let quants = match cdn_quants_for(&client, &m.id).await {
-                Ok(qs) if !qs.is_empty() => qs.join(", "),
-                _ => m.quants.clone(),
+            let (quants_str, quant_sizes) = match cdn_quants_for(&client, &m.id).await {
+                Ok(items) if !items.is_empty() => {
+                    let mut sizes = std::collections::HashMap::new();
+                    let mut labels: Vec<String> = Vec::new();
+                    for (label, size) in items {
+                        if !labels.contains(&label) {
+                            labels.push(label.clone());
+                        }
+                        // Keep the largest size seen for a given label, in case
+                        // a model has e.g. Q4_K_M and Q4_K_M-imatrix variants.
+                        sizes.entry(label).and_modify(|v| { if size > *v { *v = size } }).or_insert(size);
+                    }
+                    labels.sort();
+                    (labels.join(", "), sizes)
+                }
+                _ => (m.quants.clone(), std::collections::HashMap::new()),
             };
             AllowedModel {
                 id: m.id,
                 description: m.description,
-                quants,
+                quants: quants_str,
+                quant_sizes,
             }
         }));
     }
@@ -200,23 +220,25 @@ pub async fn list_allowed(api_key: &str) -> Result<Vec<AllowedModel>, anyhow::Er
     Ok(out)
 }
 
-/// List the quant labels (e.g. ["Q4_K_M", "Q8_0", "f16"]) actually available
-/// on the CDN for a given model id by parsing GGUF filenames.
-async fn cdn_quants_for(c: &reqwest::Client, model_id: &str) -> Result<Vec<String>, anyhow::Error> {
+/// List the quant labels + on-disk file sizes (from the CDN's autoindex
+/// JSON) for a given model id by parsing GGUF filenames. Returns
+/// pairs of (quant_label, size_bytes).
+async fn cdn_quants_for(
+    c: &reqwest::Client,
+    model_id: &str,
+) -> Result<Vec<(String, u64)>, anyhow::Error> {
     let url = format!("{LLM_FILES_BASE}/api/models/{model_id}/");
     let r = c.get(&url).send().await?;
     if !r.status().is_success() {
         return Err(anyhow::anyhow!("cdn listing {} returned {}", model_id, r.status()));
     }
     let entries = r.json::<Vec<DirEntry>>().await?;
-    let mut quants: Vec<String> = entries
+    let out: Vec<(String, u64)> = entries
         .into_iter()
         .filter(|e| e.kind == "file" && e.name.to_lowercase().ends_with(".gguf"))
-        .filter_map(|e| extract_quant(&e.name))
+        .filter_map(|e| extract_quant(&e.name).map(|q| (q, e.size)))
         .collect();
-    quants.sort();
-    quants.dedup();
-    Ok(quants)
+    Ok(out)
 }
 
 /// Extract the quant label out of a GGUF filename like
@@ -911,11 +933,20 @@ pub async fn stream_chat_local(
         keep_alive: "10m",
     };
 
-    let resp = c
-        .post(format!("{OLLAMA_BASE}/api/chat"))
-        .json(&body)
-        .send()
-        .await;
+    let resp = tokio::select! {
+        biased;
+        _ = cancel_rx.changed() => {
+            // User hit stop before the request even came back. Bail out clean.
+            let _ = out.send(ChatStreamChunk {
+                delta: String::new(),
+                done: true,
+                error: None,
+                ttft_ms: None, tps: None,
+            });
+            return Ok(());
+        }
+        r = c.post(format!("{OLLAMA_BASE}/api/chat")).json(&body).send() => r,
+    };
 
     let resp = match resp {
         Ok(r) => r,

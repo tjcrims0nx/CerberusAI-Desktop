@@ -5,6 +5,7 @@ use tokio::sync::{watch, Mutex};
 
 mod hardware;
 mod ollama;
+mod tuning;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
@@ -246,6 +247,20 @@ pub fn run() {
         .manage(PullState(Mutex::new(None)))
         .manage(ChatState(Mutex::new(None)))
         .setup(|_app| {
+            // First-run Ollama tuning (Windows only). No-op after the first
+            // successful application; safe to call every launch.
+            tauri::async_runtime::spawn(async {
+                let changed = tokio::task::spawn_blocking(tuning::apply_first_run_tuning)
+                    .await
+                    .unwrap_or(false);
+                if changed {
+                    log::info!(
+                        "applied first-run Ollama tuning; user should restart Ollama \
+                         to pick up the new keep-alive / flash-attention settings"
+                    );
+                }
+            });
+
             // Log Ollama daemon version once at startup so it shows up in
             // crash reports and support tickets without depending on the user
             // opening the right UI panel.

@@ -586,6 +586,71 @@ function Ensure-Ollama {
     }
 }
 
+# ---------- Install: Ollama runtime tuning ----------
+# Sets user-level environment variables that Ollama reads at startup so models
+# stay warm between prompts and inference uses flash attention + a quantized
+# KV cache. Without these, every prompt after a 5-min idle pays a multi-second
+# cold-load penalty, and the desktop's stream timeout fires before the first
+# token arrives.
+function Ensure-OllamaTuning {
+    Write-Step "Configuring Ollama runtime (keep-alive, flash attention, KV cache)"
+
+    # Each entry: name, recommended value, short reason for the log.
+    $vars = @{
+        "OLLAMA_KEEP_ALIVE"      = @{ value = "30m";   reason = "keep models loaded for 30m between prompts" }
+        "OLLAMA_NUM_PARALLEL"    = @{ value = "2";     reason = "2 concurrent generations per loaded model" }
+        "OLLAMA_FLASH_ATTENTION" = @{ value = "1";     reason = "enable flash attention" }
+        "OLLAMA_KV_CACHE_TYPE"   = @{ value = "q8_0";  reason = "halve KV cache memory at imperceptible quality cost" }
+    }
+
+    $changed = 0
+    foreach ($name in $vars.Keys) {
+        $desired = $vars[$name].value
+        $current = [Environment]::GetEnvironmentVariable($name, "User")
+        if ($current -eq $desired) {
+            Write-Skip "$name already set to $desired"
+            continue
+        }
+        try {
+            [Environment]::SetEnvironmentVariable($name, $desired, "User")
+            Write-OK "$name = $desired ($($vars[$name].reason))"
+            $changed++
+        } catch {
+            Write-Warn2 "Could not set $name : $($_.Exception.Message)"
+        }
+    }
+
+    if ($changed -gt 0) {
+        # Bouncing the daemon is the only way to make it pick up the new env.
+        # We do this only when something actually changed, so re-runs are quiet.
+        Write-Step "Restarting Ollama so the new settings take effect"
+        try {
+            Get-Process ollama -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Get-Process "ollama app" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 2
+
+            # Prefer the GUI tray app (ollama app.exe) if present so the user sees
+            # the system tray icon on next boot. Fall back to plain `ollama serve`.
+            $appExe = "$env:LOCALAPPDATA\Programs\Ollama\ollama app.exe"
+            if (Test-Path $appExe) {
+                Start-Process -FilePath $appExe -WindowStyle Hidden | Out-Null
+            } else {
+                Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden | Out-Null
+            }
+
+            $deadline = (Get-Date).AddSeconds(20)
+            while (-not (Test-OllamaService) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            if (Test-OllamaService) {
+                Write-OK "Ollama back online with new tuning"
+            } else {
+                Write-Warn2 "Ollama did not come back within 20s. Manually run: ollama serve"
+            }
+        } catch {
+            Write-Warn2 "Could not restart Ollama: $($_.Exception.Message). New settings apply on next start."
+        }
+    }
+}
+
 # ---------- Install: Model ----------
 function Ensure-Model {
     if ($Model -eq "skip") { Write-Skip "model pull (--Model skip)"; return }
@@ -679,6 +744,7 @@ try {
     Test-MinimumHardware
     Ensure-WebView2
     Ensure-Ollama
+    Ensure-OllamaTuning
     Ensure-Model
     Install-CerberusApp
 } catch {

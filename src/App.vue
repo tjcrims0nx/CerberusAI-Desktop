@@ -315,11 +315,12 @@ function fmtEta(secs?: number): string {
 // auto-pulled (LM Studio-style).
 const allModelChoices = computed(() => {
   const local = new Set(models.value.map((m) => modelKey(m.name)));
-  return allowedModels.value.map((m) => ({ 
-    name: m.id, 
+  return allowedModels.value.map((m) => ({
+    name: m.id,
     downloaded: local.has(modelKey(m.id)),
     description: m.description,
-    quants: m.quants
+    quants: m.quants,
+    quantSizes: m.quant_sizes ?? {},
   }));
 });
 const activeChat = computed<Chat | null>(() =>
@@ -334,6 +335,38 @@ const vramGb = computed(() => {
   const v = primaryGpu.value?.vram_mb;
   return v ? (v / 1024).toFixed(1) : null;
 });
+
+/**
+ * VRAM available for a freshly-loaded model, in bytes.
+ * We assume ~70% of the dedicated VRAM is usable (the rest goes to display
+ * compositor + driver overhead) and conservatively warn on anything bigger.
+ * Returns null if we don't have GPU info — in that case we don't show hints.
+ */
+const usableVramBytes = computed<number | null>(() => {
+  const mb = primaryGpu.value?.vram_mb;
+  if (!mb) return null;
+  // Convert MB to bytes, then take 70%.
+  return Math.floor(mb * 1024 * 1024 * 0.7);
+});
+
+/**
+ * For a given quant file size in bytes, classify how it'll behave on this GPU:
+ *   "fits"      — comfortable on GPU, will run fast
+ *   "tight"     — within 90% of usable VRAM; might offload partially
+ *   "too-big"   — won't fit, Ollama will fall back to CPU (very slow)
+ *   "unknown"   — no VRAM info or no size info
+ */
+function quantFit(bytes: number | undefined): "fits" | "tight" | "too-big" | "unknown" {
+  if (!bytes || !usableVramBytes.value) return "unknown";
+  if (bytes <= usableVramBytes.value * 0.9) return "fits";
+  if (bytes <= usableVramBytes.value) return "tight";
+  return "too-big";
+}
+
+function fmtSizeGb(bytes: number | undefined): string {
+  if (!bytes) return "";
+  return (bytes / 1024 / 1024 / 1024).toFixed(1) + " GB";
+}
 
 function uid(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -592,16 +625,26 @@ async function send() {
   lastTtft.value = null;
   lastTps.value = null;
 
-  // Safety timeout: if no content arrives within 2 minutes, unblock the UI.
+  // Safety timeout: if no content arrives within 5 minutes, unblock the UI.
+  // Cold-loading a multi-GB GGUF off a slow disk can easily take 60-120s,
+  // and that delay shouldn't trip a "no response" error.
   let gotContent = false;
+  const loadingHintTimer = setTimeout(() => {
+    if (!gotContent && streaming.value) {
+      streamingContent.value =
+        "_loading model into memory — first response after a model switch can take a minute…_";
+      chat.messages[assistantIdx].content = streamingContent.value;
+    }
+  }, 8_000);
   const safetyTimer = setTimeout(() => {
     if (!gotContent && streaming.value) {
-      streamingContent.value += "\n\n[error] No response from model — it may still be loading. Try again.";
+      streamingContent.value =
+        "\n\n[error] No response from model after 5 minutes — Ollama may be stuck. Try `ollama ps` to confirm it's loaded, then retry.";
       chat.messages[assistantIdx].content = streamingContent.value;
       streaming.value = false;
       saveChats();
     }
-  }, 120_000);
+  }, 300_000);
 
   const channel = new Channel<ChatStreamChunk>();
   channel.onmessage = (chunk) => {
@@ -609,6 +652,7 @@ async function send() {
     if (chunk.tps !== undefined && chunk.tps !== null) lastTps.value = chunk.tps;
 
     if (chunk.error) {
+      clearTimeout(loadingHintTimer);
       clearTimeout(safetyTimer);
       streamingContent.value += `\n\n[error] ${chunk.error}`;
       chat.messages[assistantIdx].content = finalizeMessage(streamingContent.value);
@@ -617,11 +661,17 @@ async function send() {
       return;
     }
     if (chunk.delta) {
+      // First real token clears the loading hint and replaces it with the actual content.
+      if (!gotContent) {
+        clearTimeout(loadingHintTimer);
+        streamingContent.value = "";
+      }
       gotContent = true;
       streamingContent.value += chunk.delta;
       scrollToBottom();
     }
     if (chunk.done) {
+      clearTimeout(loadingHintTimer);
       clearTimeout(safetyTimer);
       chat.messages[assistantIdx].content = finalizeMessage(streamingContent.value);
       streaming.value = false;
@@ -647,6 +697,7 @@ async function send() {
       onEvent: channel,
     });
   } catch (e) {
+    clearTimeout(loadingHintTimer);
     clearTimeout(safetyTimer);
     streamingContent.value += `\n\n[error] ${String(e)}`;
     chat.messages[assistantIdx].content = streamingContent.value;
@@ -976,17 +1027,32 @@ onMounted(async () => {
                 <button class="model-action-btn use" disabled>PULLING...</button>
               </template>
               <template v-else>
-                <div style="display: flex; gap: 4px;">
-                  <button 
-                    v-for="q in m.quants.split(',').map(s => s.trim()).filter(Boolean)" 
+                <div class="quant-buttons">
+                  <button
+                    v-for="q in m.quants.split(',').map(s => s.trim()).filter(Boolean)"
                     :key="q"
                     class="model-action-btn use"
+                    :class="{
+                      'fit-tight': quantFit(m.quantSizes[q]) === 'tight',
+                      'fit-too-big': quantFit(m.quantSizes[q]) === 'too-big'
+                    }"
+                    :title="
+                      m.quantSizes[q]
+                        ? `${fmtSizeGb(m.quantSizes[q])}` + (
+                            quantFit(m.quantSizes[q]) === 'too-big'
+                              ? ` — won't fit your ${vramGb || '?'} GB GPU; will run on CPU (slow)`
+                              : quantFit(m.quantSizes[q]) === 'tight'
+                                ? ` — close to your ${vramGb || '?'} GB GPU limit; may offload partially`
+                                : ''
+                          )
+                        : 'Pull ' + q
+                    "
                     @click.stop="pullModel(m.name, q)"
                   >
-                    PULL {{ q }}
+                    PULL {{ q }}<span v-if="m.quantSizes[q]" class="quant-size">{{ fmtSizeGb(m.quantSizes[q]) }}</span>
                   </button>
-                  <button 
-                    v-if="!m.quants" 
+                  <button
+                    v-if="!m.quants"
                     class="model-action-btn use"
                     @click.stop="pullModel(m.name)"
                   >
@@ -1716,6 +1782,39 @@ onMounted(async () => {
 .model-action-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+.quant-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.quant-size {
+  margin-left: 6px;
+  opacity: 0.75;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+/* Tight fit — yellow border to signal partial-offload risk */
+.model-action-btn.use.fit-tight {
+  background: linear-gradient(180deg, #b25f00, #6a3500);
+  border: 1px solid rgba(255, 200, 100, 0.6);
+}
+.model-action-btn.use.fit-tight:hover {
+  filter: brightness(1.1);
+  box-shadow: inset 0 1px 1px rgba(255,255,255,0.4), 0 4px 12px rgba(255, 170, 60, 0.25);
+}
+/* Too big — dim and stamp warning */
+.model-action-btn.use.fit-too-big {
+  background: linear-gradient(180deg, #4a1218, #2a0608);
+  border: 1px solid rgba(255, 80, 80, 0.5);
+  opacity: 0.85;
+}
+.model-action-btn.use.fit-too-big::after {
+  content: " ⚠";
+  margin-left: 2px;
+}
+.model-action-btn.use.fit-too-big:hover {
+  filter: brightness(1.05);
 }
 .model-action-btn.success {
   background: rgba(16, 185, 129, 0.15);
