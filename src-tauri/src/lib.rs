@@ -216,8 +216,8 @@ async fn update_app(force: Option<bool>) -> Result<(), String> {
             ));
         }
     }
-    let is_beta = env!("CARGO_PKG_VERSION").contains("beta");
-    let cmd = if is_beta {
+    let is_prerelease = env!("CARGO_PKG_VERSION").contains('-');
+    let cmd = if is_prerelease {
         "irm https://cerberusai.dev/get-beta | iex"
     } else {
         "irm https://cerberusai.dev/get | iex"
