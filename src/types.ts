@@ -70,3 +70,17 @@ export interface GgufFile {
   name: string;
   size: number;
 }
+
+export interface Plugin {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  enabled: boolean;
+  systemPrompt: string;
+  command: string; // e.g. "/simplify"
+  isBuiltin: boolean;
+  author?: string;
+  version?: string;
+}
+

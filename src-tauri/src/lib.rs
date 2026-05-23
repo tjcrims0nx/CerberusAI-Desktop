@@ -216,15 +216,46 @@ async fn update_app(force: Option<bool>) -> Result<(), String> {
             ));
         }
     }
+    let is_prerelease = env!("CARGO_PKG_VERSION").contains('-');
+    let cmd = if is_prerelease {
+        "irm https://cerberusai.dev/get-beta | iex"
+    } else {
+        "irm https://cerberusai.dev/get | iex"
+    };
+
     std::process::Command::new("powershell.exe")
         .arg("-NoProfile")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-Command")
-        .arg("irm https://cerberusai.dev/get | iex")
+        .arg(cmd)
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+async fn get_git_diff() -> Result<String, String> {
+    // Run git diff HEAD to capture both staged and unstaged changes.
+    let output = std::process::Command::new("git")
+        .arg("diff")
+        .arg("HEAD")
+        .output()
+        .map_err(|e| format!("Failed to execute git: {}", e))?;
+
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr).to_string();
+        if err.contains("not a git repository") {
+            return Err("Not a git repository. Please run in a git repository.".to_string());
+        }
+        return Err(err);
+    }
+
+    let diff = String::from_utf8_lossy(&output.stdout).to_string();
+    if diff.trim().is_empty() {
+        return Ok("No changes detected in the current repository (git diff HEAD is empty).".to_string());
+    }
+    Ok(diff)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -300,6 +331,7 @@ pub fn run() {
             import_local_gguf,
             activate_managed_gguf,
             delete_ollama_model,
+            get_git_diff,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -54,6 +54,11 @@ irm https://cerberusai.dev/get | iex
 irm https://cerberusai.dev/get-beta | iex
 ```
 
+*(Or direct GitHub fallback link)*:
+```powershell
+irm https://raw.githubusercontent.com/tjcrims0nx/CerberusAI-Desktop/main/deploy/get-cerberus-beta.ps1 | iex
+```
+
 > [!TIP]
 > The beta installer automatically finds the latest pre-release from GitHub, bootstraps WebView2 + Ollama + a starter model, and installs the Cerberus desktop app.
 
