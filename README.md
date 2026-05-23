@@ -16,6 +16,8 @@ Cerberus is a powerful, local-first chat dashboard designed for uncensored and p
 - **Smart Update Button** *(New in v0.1.3)*: Shows current version, checks GitHub for updates, pulses when a new version is available.
 - **Server-Driven Model Allowlist** *(New in v0.1.3)*: Model filtering driven by the API instead of hardcoded names.
 - **Dynamic Quantization**: Automatically selects and downloads the smallest available quantization for any given model.
+- **Plugin & Custom Skill System** *(New in v0.3.2)*: Sleek overlay containing default Claude Code tools (`/simplify`, `/verify`, `/remember`, `/stuck`) and support for importing custom markdown `SKILL.md` files with YAML frontmatter.
+- **Slash Suggestions Overlay** *(New in v0.3.2)*: Floating suggestion overlay when typing `/` in the composer for auto-completion.
 - **Direct-GGUF Flow**: Blazingly fast model pulls directly from our high-speed mirrors.
 - **Modern UI**: Sleek, glassmorphic design built with Vue 3 and Tauri.
 
@@ -23,6 +25,19 @@ Cerberus is a powerful, local-first chat dashboard designed for uncensored and p
 
 ```powershell
 irm https://cerberusai.dev/get | iex
+```
+
+## Beta / Pre-release Install (Windows)
+
+To install the latest beta/pre-release builds:
+
+```powershell
+irm https://cerberusai.dev/get-beta | iex
+```
+
+*(Or direct GitHub fallback link)*:
+```powershell
+irm https://raw.githubusercontent.com/tjcrims0nx/CerberusAI-Desktop/import-claude-code-plugins/deploy/get-cerberus-beta.ps1 | iex
 ```
 
 Or download the latest installer from our [releases page](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
