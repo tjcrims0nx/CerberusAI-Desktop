@@ -216,12 +216,19 @@ async fn update_app(force: Option<bool>) -> Result<(), String> {
             ));
         }
     }
+    let is_beta = env!("CARGO_PKG_VERSION").contains("beta");
+    let cmd = if is_beta {
+        "irm https://cerberusai.dev/get-beta | iex"
+    } else {
+        "irm https://cerberusai.dev/get | iex"
+    };
+
     std::process::Command::new("powershell.exe")
         .arg("-NoProfile")
         .arg("-ExecutionPolicy")
         .arg("Bypass")
         .arg("-Command")
-        .arg("irm https://cerberusai.dev/get | iex")
+        .arg(cmd)
         .spawn()
         .map_err(|e| e.to_string())?;
     Ok(())
