@@ -33,7 +33,15 @@ import type {
   ChatStreamChunk,
   GgufFile,
   OllamaStatus,
+  Plugin,
 } from "./types";
+import {
+  loadAllPlugins,
+  savePluginState,
+  parseMarkdownSkill,
+  addCustomPlugin,
+  deleteCustomPlugin
+} from "./plugins/pluginSystem";
 
 const STORAGE_KEY = "cerberus.chats.v1";
 const MODEL_KEY = "cerberus.model.v1";
@@ -105,6 +113,122 @@ const managerTab = ref<'ollama' | 'files' | 'cloud'>('ollama');
 const managerSearch = ref('');
 const isDeletingModel = ref(false);
 const activatedGgufs = ref<Set<string>>(new Set());
+
+// Plugins Manager
+const showPluginManager = ref(false);
+const plugins = ref<Plugin[]>([]);
+const pluginTab = ref<'builtins' | 'custom'>('builtins');
+const pluginSearch = ref('');
+const customSkillImportError = ref('');
+
+// Custom Skill Form
+const customSkillName = ref('');
+const customSkillDescription = ref('');
+const customSkillPrompt = ref('');
+const customSkillIcon = ref('📄');
+
+const matchingPlugins = computed(() => {
+  if (!draft.value.startsWith("/")) return [];
+  const typed = draft.value.toLowerCase().trim();
+  if (typed.includes(" ")) return [];
+  return plugins.value.filter((p: Plugin) => p.enabled && p.command.toLowerCase().startsWith(typed));
+});
+
+function selectSlashCommand(cmd: string) {
+  draft.value = cmd + " ";
+  nextTick(() => {
+    const el = document.querySelector(".composer-inner textarea") as HTMLTextAreaElement;
+    if (el) {
+      el.focus();
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    }
+  });
+}
+
+const filteredPlugins = computed(() => {
+  const q = pluginSearch.value.toLowerCase().trim();
+  let list = plugins.value;
+  if (pluginTab.value === 'builtins') {
+    list = list.filter((p: Plugin) => p.isBuiltin);
+  } else {
+    list = list.filter((p: Plugin) => !p.isBuiltin);
+  }
+  if (!q) return list;
+  return list.filter((p: Plugin) => p.name.toLowerCase().includes(q) || p.description.toLowerCase().includes(q) || p.command.toLowerCase().includes(q));
+});
+
+function refreshPlugins() {
+  plugins.value = loadAllPlugins();
+}
+
+function togglePlugin(plugin: Plugin) {
+  const newState = !plugin.enabled;
+  savePluginState(plugin.id, newState);
+  refreshPlugins();
+}
+
+async function handleImportMarkdown(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const file = target.files?.[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const text = e.target?.result as string;
+      const parsed = parseMarkdownSkill(file.name, text);
+      plugins.value = addCustomPlugin(parsed);
+      customSkillImportError.value = '';
+      alert(`Successfully imported skill "${parsed.name}"!`);
+      // Reset input
+      target.value = '';
+    } catch (err: any) {
+      customSkillImportError.value = `Failed to parse skill: ${err.message || err}`;
+    }
+  };
+  reader.readAsText(file);
+}
+
+function handleCreateCustomPlugin() {
+  const name = customSkillName.value.trim();
+  const desc = customSkillDescription.value.trim();
+  const promptText = customSkillPrompt.value.trim();
+  if (!name || !promptText) {
+    customSkillImportError.value = "Name and System Prompt are required.";
+    return;
+  }
+  
+  const cleanName = name.replace(/[^a-zA-Z0-9-_]/g, "");
+  const id = `${cleanName.toLowerCase()}@custom`;
+  
+  const newPlugin: Plugin = {
+    id,
+    name,
+    description: desc || "Manually created custom skill.",
+    icon: customSkillIcon.value || "📄",
+    enabled: true,
+    systemPrompt: promptText,
+    command: `/${cleanName.toLowerCase()}`,
+    isBuiltin: false,
+    author: "User",
+    version: "1.0.0"
+  };
+
+  plugins.value = addCustomPlugin(newPlugin);
+  customSkillName.value = '';
+  customSkillDescription.value = '';
+  customSkillPrompt.value = '';
+  customSkillIcon.value = '📄';
+  customSkillImportError.value = '';
+  alert(`Successfully created custom skill "${newPlugin.name}"!`);
+}
+
+function handleDeletePlugin(pluginId: string) {
+  if (confirm("Are you sure you want to delete this custom skill?")) {
+    plugins.value = deleteCustomPlugin(pluginId);
+  }
+}
 
 const filteredOllamaModels = computed(() => {
   const q = managerSearch.value.toLowerCase().trim();
@@ -683,10 +807,43 @@ async function send() {
   // Cap history to last 20 messages to avoid overwhelming the context window
   const history = chat.messages.slice(0, -1);
   const cappedHistory = history.length > 20 ? history.slice(-20) : history;
+  
   const messagesToSend = [
     { role: "system", content: SYSTEM_PROMPT },
-    ...cappedHistory,
   ];
+
+  // Process history and expand the last user message if it's a slash command plugin
+  for (let i = 0; i < cappedHistory.length; i++) {
+    const msg = cappedHistory[i];
+    if (i === cappedHistory.length - 1 && msg.role === "user" && msg.content.startsWith("/")) {
+      const parts = msg.content.split(" ");
+      const cmdWord = parts[0].toLowerCase();
+      const args = parts.slice(1).join(" ");
+      
+      const plugin = plugins.value.find((p: Plugin) => p.command.toLowerCase() === cmdWord && p.enabled);
+      if (plugin) {
+        let expandedText = plugin.systemPrompt;
+        if (args) {
+          expandedText += `\n\n## Additional Instructions/Context:\n${args}`;
+        }
+        
+        if (cmdWord === "/simplify") {
+          // If simplify is invoked, run the git diff backend command
+          let diff = "";
+          try {
+            diff = await invoke<string>("get_git_diff");
+          } catch (e) {
+            diff = `Error fetching git diff: ${e}`;
+          }
+          expandedText += `\n\n## Workspace Git Diff:\n\`\`\`diff\n${diff}\n\`\`\``;
+        }
+        
+        messagesToSend.push({ role: "user", content: expandedText });
+        continue;
+      }
+    }
+    messagesToSend.push(msg);
+  }
 
   try {
     await invoke("chat_stream", {
@@ -807,6 +964,7 @@ function useSuggestion(text: string) {
 
 onMounted(async () => {
   loadChats();
+  refreshPlugins();
   try {
     appVersion.value = await getVersion();
   } catch (e) {
@@ -832,6 +990,212 @@ onMounted(async () => {
 <template>
   <div class="glow-orb orb-1"></div>
   <div class="glow-orb orb-2"></div>
+
+  <!-- Plugin Manager Modal -->
+  <div v-if="showPluginManager" class="key-gate" @click.self="showPluginManager = false" style="z-index: 1001;">
+    <div class="manager-panel plugins-panel">
+      <!-- Header -->
+      <div class="manager-header">
+        <div class="manager-title-row">
+          <div class="key-logo" style="width: 42px; height: 42px; font-size: 1.1rem; margin: 0; background: linear-gradient(135deg, #a855f7, #6366f1); display: flex; align-items: center; justify-content: center; border-radius: 12px; border: 1px solid rgba(255, 255, 255, 0.2);">🔌</div>
+          <div>
+            <h2 class="manager-title">PLUGIN MANAGER</h2>
+            <p class="manager-subtitle">Toggle developer tools & import custom markdown skills</p>
+          </div>
+          <button class="manager-close" @click="showPluginManager = false" title="Close" style="margin-left: auto;">✕</button>
+        </div>
+
+        <!-- Search bar -->
+        <div class="manager-search-row">
+          <input
+            v-model="pluginSearch"
+            class="manager-search"
+            type="text"
+            placeholder="Search plugins & skills by name or command…"
+            spellcheck="false"
+          />
+        </div>
+
+        <!-- Tabs -->
+        <div class="manager-tabs">
+          <button
+            class="manager-tab"
+            :class="{ active: pluginTab === 'builtins' }"
+            @click="pluginTab = 'builtins'"
+          >
+            DEVELOPER TOOLS
+            <span class="manager-tab-count">{{ plugins.filter(p => p.isBuiltin).length }}</span>
+          </button>
+          <button
+            class="manager-tab"
+            :class="{ active: pluginTab === 'custom' }"
+            @click="pluginTab = 'custom'"
+          >
+            CUSTOM SKILLS
+            <span class="manager-tab-count">{{ plugins.filter(p => !p.isBuiltin).length }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Body -->
+      <div class="manager-body">
+        <!-- Built-in tab content -->
+        <template v-if="pluginTab === 'builtins'">
+          <p class="manager-hint">
+            Standard developer utilities inspired by Claude Code. Use commands like <code>/simplify</code> or <code>/verify</code> directly in the chat when enabled.
+          </p>
+
+          <div v-if="filteredPlugins.length === 0" class="manager-empty">
+            No built-in plugins found matching "{{ pluginSearch }}"
+          </div>
+
+          <div v-else class="manager-list">
+            <div v-for="p in filteredPlugins" :key="p.id" class="model-card plugin-card">
+              <div class="model-card-main" style="align-items: flex-start;">
+                <div class="model-card-icon plugin-icon" style="background: rgba(168, 85, 247, 0.15); border: 1px solid rgba(168, 85, 247, 0.3);">{{ p.icon }}</div>
+                <div class="model-card-info" style="flex: 1;">
+                  <div class="model-card-name-row" style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                    <span class="model-card-name" style="font-weight: 700; color: #fff; font-size: 1.05rem;">{{ p.name }}</span>
+                    <span class="plugin-command-badge" style="background: rgba(99, 102, 241, 0.2); color: #818cf8; font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; font-family: monospace; border: 1px solid rgba(99, 102, 241, 0.4);">{{ p.command }}</span>
+                  </div>
+                  <p class="plugin-card-desc" style="font-size: 0.85rem; color: rgba(255, 255, 255, 0.7); line-height: 1.4; margin: 4px 0 8px 0;">{{ p.description }}</p>
+                  <div class="model-card-meta">
+                    <span class="model-tag">v{{ p.version }}</span>
+                    <span class="model-tag author">{{ p.author }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="model-card-actions">
+                <button
+                  class="model-action-btn"
+                  :class="p.enabled ? 'danger' : 'use'"
+                  @click="togglePlugin(p)"
+                >
+                  {{ p.enabled ? 'DISABLE' : 'ENABLE' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- Custom skills tab content -->
+        <template v-if="pluginTab === 'custom'">
+          <div class="custom-skills-split">
+            <!-- Left side: Skills List -->
+            <div class="skills-list-col">
+              <div class="manager-disk-bar">
+                <span class="manager-disk-label">MY CUSTOM SKILLS</span>
+              </div>
+
+              <div v-if="filteredPlugins.length === 0" class="manager-empty" style="padding: 40px 0;">
+                No custom skills registered yet.<br/>Create one or import a Claude-compatible <code>SKILL.md</code>.
+              </div>
+
+              <div v-else class="manager-list scrollable-list" style="max-height: 380px; overflow-y: auto;">
+                <div v-for="p in filteredPlugins" :key="p.id" class="model-card plugin-card">
+                  <div class="model-card-main" style="align-items: flex-start;">
+                    <div class="model-card-icon plugin-icon" style="background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.3);">{{ p.icon }}</div>
+                    <div class="model-card-info" style="flex: 1;">
+                      <div class="model-card-name-row" style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+                        <span class="model-card-name" style="font-weight: 700; color: #fff; font-size: 1.05rem;">{{ p.name }}</span>
+                        <span class="plugin-command-badge" style="background: rgba(99, 102, 241, 0.2); color: #818cf8; font-size: 0.75rem; padding: 2px 8px; border-radius: 12px; font-family: monospace; border: 1px solid rgba(99, 102, 241, 0.4);">{{ p.command }}</span>
+                      </div>
+                      <p class="plugin-card-desc" style="font-size: 0.85rem; color: rgba(255, 255, 255, 0.7); line-height: 1.4; margin: 4px 0 8px 0;">{{ p.description }}</p>
+                      <div class="model-card-meta">
+                        <span class="model-tag">v{{ p.version }}</span>
+                        <span class="model-tag author">{{ p.author }}</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="model-card-actions" style="flex-direction: column; gap: 6px;">
+                    <button
+                      class="model-action-btn"
+                      :class="p.enabled ? 'danger' : 'use'"
+                      @click="togglePlugin(p)"
+                      style="width: 100%;"
+                    >
+                      {{ p.enabled ? 'DISABLE' : 'ENABLE' }}
+                    </button>
+                    <button
+                      class="model-action-btn danger"
+                      @click="handleDeletePlugin(p.id)"
+                      style="width: 100%; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); color: #f87171;"
+                    >
+                      DELETE
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right side: Import & Create Skill Form -->
+            <div class="skill-form-col">
+              <div class="manager-disk-bar">
+                <span class="manager-disk-label">IMPORT & CREATE</span>
+              </div>
+
+              <!-- Import markdown file -->
+              <div class="import-section" style="margin-bottom: 20px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); padding: 16px; border-radius: 12px;">
+                <h4 class="form-section-title" style="margin: 0 0 4px 0; font-size: 0.95rem; color: #fff; font-weight: 600;">Import Claude SKILL.md</h4>
+                <p class="form-hint" style="margin: 0 0 12px 0; font-size: 0.75rem; color: rgba(255,255,255,0.5);">Supports markdown files with YAML frontmatter conventions.</p>
+                <label class="custom-file-upload" style="display: inline-block; background: linear-gradient(135deg, #a855f7, #6366f1); color: #fff; padding: 10px 20px; border-radius: 8px; font-weight: 600; font-size: 0.8rem; cursor: pointer; text-align: center; border: 1px solid rgba(255, 255, 255, 0.1); text-shadow: 0 1px 2px rgba(0,0,0,0.2); transition: all 0.2s;">
+                  <input type="file" accept=".md" @change="handleImportMarkdown" style="display: none;" />
+                  📁 SELECT SKILL.MD FILE
+                </label>
+              </div>
+
+              <div class="divider" style="display: flex; align-items: center; text-align: center; color: rgba(255,255,255,0.3); font-size: 0.7rem; font-weight: 700; margin: 15px 0;">
+                <span style="flex-grow: 1; border-bottom: 1px solid rgba(255,255,255,0.08); margin-right: 10px;"></span>
+                OR CREATE MANUALLY
+                <span style="flex-grow: 1; border-bottom: 1px solid rgba(255,255,255,0.08); margin-left: 10px;"></span>
+              </div>
+
+              <!-- Create manual form -->
+              <div class="manual-form" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); padding: 16px; border-radius: 12px; display: flex; flex-direction: column; gap: 12px;">
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 4px;">
+                  <label style="font-size: 0.75rem; color: rgba(255,255,255,0.6); font-weight: 600;">Skill Name (e.g. "SecurityReview")</label>
+                  <input v-model="customSkillName" class="manager-search" style="padding: 8px 12px; font-size: 0.85rem;" type="text" placeholder="e.g. SecurityReview" spellcheck="false" />
+                </div>
+                <div class="form-group-row" style="display: flex; gap: 12px;">
+                  <div class="form-group" style="flex: 2; display: flex; flex-direction: column; gap: 4px;">
+                    <label style="font-size: 0.75rem; color: rgba(255,255,255,0.6); font-weight: 600;">Description</label>
+                    <input v-model="customSkillDescription" class="manager-search" style="padding: 8px 12px; font-size: 0.85rem;" type="text" placeholder="Explain what it does..." spellcheck="false" />
+                  </div>
+                  <div class="form-group" style="flex: 1; display: flex; flex-direction: column; gap: 4px;">
+                    <label style="font-size: 0.75rem; color: rgba(255,255,255,0.6); font-weight: 600;">Icon</label>
+                    <select v-model="customSkillIcon" class="form-select" style="background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #fff; border-radius: 8px; padding: 8px; font-size: 0.85rem; outline: none; cursor: pointer;">
+                      <option value="📄" style="background: #111;">📄 Document</option>
+                      <option value="🔧" style="background: #111;">🔧 Tool</option>
+                      <option value="🔍" style="background: #111;">🔍 Inspect</option>
+                      <option value="🐛" style="background: #111;">🐛 Debug</option>
+                      <option value="🚀" style="background: #111;">🚀 Deploy</option>
+                      <option value="🔒" style="background: #111;">🔒 Secure</option>
+                      <option value="💡" style="background: #111;">💡 Tip</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 4px;">
+                  <label style="font-size: 0.75rem; color: rgba(255,255,255,0.6); font-weight: 600;">System Prompt (Detailed instructions for the LLM)</label>
+                  <textarea v-model="customSkillPrompt" class="form-textarea" style="background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.1); color: #fff; border-radius: 8px; padding: 10px; font-size: 0.85rem; outline: none; resize: vertical; min-height: 100px; font-family: monospace;" placeholder="Describe the steps, expectations, and role for this skill..." spellcheck="false"></textarea>
+                </div>
+
+                <p v-if="customSkillImportError" class="key-error" style="color: #f87171; font-size: 0.75rem; margin: 0;">{{ customSkillImportError }}</p>
+
+                <button class="create-skill-btn" style="background: linear-gradient(135deg, #6366f1, #a855f7); color: #fff; padding: 10px; border-radius: 8px; font-weight: 700; font-size: 0.85rem; border: none; cursor: pointer; text-shadow: 0 1px 1px rgba(0,0,0,0.2); transition: all 0.2s;" @click="handleCreateCustomPlugin" :disabled="!customSkillName.trim() || !customSkillPrompt.trim()">
+                  ➕ CREATE CUSTOM SKILL
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <!-- Footer -->
+      <div class="manager-footer">
+        <button class="close-modal-btn" @click="showPluginManager = false">DONE</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Model Manager Modal (LM Studio-style) -->
   <div v-if="showFileManager" class="key-gate" @click.self="showFileManager = false" style="z-index: 1000;">
@@ -1209,6 +1573,10 @@ onMounted(async () => {
           <span v-else>CHECKING…</span>
         </button>
 
+        <button class="signout-btn" @click="showPluginManager = true" title="Manage developer plugins and custom skills">
+          PLUGIN MANAGER
+        </button>
+
         <button class="signout-btn" @click="openFileManager" title="Manage local models and GGUF files">
           MODEL MANAGER
         </button>
@@ -1298,6 +1666,23 @@ onMounted(async () => {
       </div>
 
       <div class="composer">
+        <!-- Slash command auto-suggestions overlay -->
+        <div v-if="matchingPlugins.length > 0" class="slash-suggestions">
+          <div class="slash-suggestions-title">💡 PLUGINS & CUSTOM SKILLS</div>
+          <button
+            v-for="p in matchingPlugins"
+            :key="p.id"
+            class="slash-suggestion-item"
+            @click="selectSlashCommand(p.command)"
+            :title="p.description"
+          >
+            <span class="slash-suggest-icon">{{ p.icon }}</span>
+            <span class="slash-suggest-cmd">{{ p.command }}</span>
+            <span class="slash-suggest-name">{{ p.name }}</span>
+            <span class="slash-suggest-desc">{{ p.description }}</span>
+          </button>
+        </div>
+
         <div class="composer-inner">
           <textarea
             v-model="draft"
