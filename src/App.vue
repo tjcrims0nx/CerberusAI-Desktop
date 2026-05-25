@@ -143,8 +143,10 @@ async function handleFileSelect(e: Event) {
 
 const streamingContent = ref<string>("");
 const updating = ref<boolean>(false);
+const betaUpdating = ref<boolean>(false);
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
-const appVersion = ref<string>("0.2.6");
+const betaUpdateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
+const appVersion = ref<string>("0.4.0-beta.1");
 const messagesEl = ref<HTMLElement | null>(null);
 const lastTtft = ref<number | null>(null);
 const lastTps = ref<number | null>(null);
@@ -171,7 +173,7 @@ function finalizeMessage(text: string): string {
     r = r.replace(/<\|im_(?:start|end)\|>/g, "");
     r = r.replace(/<(?:start|end)_of_turn>/g, "");
     // Drop orphan leading punctuation/whitespace before the first letter or emoji
-    r = r.replace(/^[\s,;:.!?'"`]+(?=[A-Za-z0-9À-￿])/, "");
+    r = r.replace(/^[\s,;:.!?'"`]+(?=[A-Za-z0-9À-])/, "");
     r = r.trim();
     return r.length === 0 && text.trim().length > 0 ? text.trim() : r;
   } catch {
@@ -624,6 +626,18 @@ async function checkForUpdate() {
   }
 }
 
+async function checkForBetaUpdate() {
+  try {
+    const info = await invoke<{ current: string; latest: string; available: boolean }>(
+      "check_for_beta_update"
+    );
+    betaUpdateInfo.value = info;
+  } catch (e) {
+    console.warn("check_for_beta_update failed", e);
+    betaUpdateInfo.value = { current: appVersion.value, latest: "unknown", available: false };
+  }
+}
+
 async function detectHardware() {
   try {
     hardware.value = await invoke<HardwareInfo>("detect_hardware");
@@ -1038,6 +1052,20 @@ async function handleUpdate() {
   }
 }
 
+async function handleBetaUpdate() {
+  if (betaUpdating.value) return;
+  if (!betaUpdateInfo.value?.available) return;
+  betaUpdating.value = true;
+  try {
+    await invoke("update_beta_app");
+  } catch (e) {
+    console.error("Beta Update failed", e);
+    alert(`Beta Update failed: ${e}`);
+  } finally {
+    betaUpdating.value = false;
+  }
+}
+
 function useSuggestion(text: string) {
   draft.value = text;
 }
@@ -1437,7 +1465,19 @@ onMounted(async () => {
             <strong style="color: #fff">Enter</strong> to send • <strong>Shift+Enter</strong> for newline
           </div>
         </div>
-      </div>
+
+        <button
+          v-if="betaUpdateInfo?.available && !updating"
+          class="beta-update-pill"
+          @click="handleBetaUpdate"
+          :disabled="betaUpdating"
+        >
+          <span v-if="betaUpdating">UPDATING BETA...</span>
+          <template v-else>
+            <span class="update-dot" style="background: #eab308; box-shadow: 0 0 10px #eab308;"></span>
+            BETA UPDATE TO v{{ betaUpdateInfo.latest }}
+          </template>
+        </button>
     </main>
   </div>
 </template>

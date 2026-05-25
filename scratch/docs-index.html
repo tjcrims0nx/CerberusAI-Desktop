@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CerberusAI - Docs Hub</title>
+    <meta name="description" content="CerberusAI docs hub for access, API integration, model downloads, and platform references.">
+    <link rel="stylesheet" href="/docs/legacy-base.css">
+    <link rel="stylesheet" href="/assets/fonts/outfit.css">
+    <link rel="stylesheet" href="hub.css">
+</head>
+<body>
+    <div class="particle-container" id="particles"></div>
+    <div class="glow-orb orb-1"></div>
+    <div class="glow-orb orb-2"></div>
+
+    <nav class="top-nav">
+        <div class="nav-brand">
+            <a href="/" class="brand-link">
+                <img src="../assets/logo.png" alt="Cerberus AI" class="nav-logo">
+                <span class="nav-name" data-text="CerberusAI">CerberusAI</span>
+            </a>
+        </div>
+        <div class="nav-links">
+            <a class="nav-link active" href="/docs/">Docs Hub</a>
+            <a class="nav-link" href="/docs/api/">API Reference</a>
+        </div>
+        <div class="nav-actions">
+            <a class="nav-btn nav-btn-ghost" href="https://access.cerberusai.dev/login">LOG IN</a>
+            <a class="nav-btn nav-btn-primary" href="https://access.cerberusai.dev/signup">SIGN UP</a>
+        </div>
+    </nav>
+
+    <main class="glass-container docs-hub">
+        <section class="hero">
+            <div class="hero-copy">
+                <span class="eyebrow">CerberusAI Docs</span>
+                <h1 class="hero-title">One place for access, API integration, and model delivery.</h1>
+                <p class="hero-subtitle">
+                    Start in the access portal, integrate against the OpenAI-compatible gateway,
+                    or pull model files straight from the public CDN.
+                </p>
+                <div class="hero-actions">
+                    <a class="nav-btn nav-btn-primary" href="/docs/api/">Open API reference</a>
+                    <a class="nav-btn nav-btn-ghost" href="https://api.cerberusai.dev/skills-sse">MCP Server Endpoint</a>
+                </div>
+            </div>
+            <div class="hero-panel">
+                <div class="hero-panel-label">Quick path</div>
+                <ol class="quick-steps">
+                    <li>Create an account on the access portal.</li>
+                    <li>Generate an API key from the dashboard.</li>
+                    <li>Call the Cerberus gateway or download GGUF models.</li>
+                </ol>
+            </div>
+        </section>
+
+        <section class="status-strip">
+            <div class="status-pill">Gateway: <strong>api.cerberusai.dev</strong></div>
+            <div class="status-pill">Access: <strong>access.cerberusai.dev</strong></div>
+            <div class="status-pill">CDN: <strong>llm.cerberusai.dev</strong></div>
+            <div class="status-pill">MCP Skills: <strong>api.cerberusai.dev/skills-sse</strong></div>
+        </section>
+
+        <section class="hub-grid">
+            <a class="hub-card hub-card-featured" href="/docs/api/">
+                <div class="hub-card-tag">Reference</div>
+                <h2>API Reference</h2>
+                <p>OpenAI-compatible chat completions, model discovery, health checks, error codes, and direct download endpoints.</p>
+                <span class="hub-link">Open docs</span>
+            </a>
+
+            <a class="hub-card" href="https://access.cerberusai.dev/signup">
+                <div class="hub-card-tag">Access</div>
+                <h2>Access Portal</h2>
+                <p>Sign up, verify your email, manage keys, open chat, and move into the Cerberus account surface.</p>
+                <span class="hub-link">Open portal</span>
+            </a>
+
+            <a class="hub-card" href="https://llm.cerberusai.dev/api/models/">
+                <div class="hub-card-tag">Public JSON</div>
+                <h2>Model CDN</h2>
+                <p>Browse the public model index, inspect exact file sizes, and link directly to hosted GGUF builds.</p>
+                <span class="hub-link">Browse CDN</span>
+            </a>
+
+            <a class="hub-card" href="https://api.cerberusai.dev/skills-sse">
+                <div class="hub-card-tag">SSE Server</div>
+                <h2>MCP Skills Aggregator</h2>
+                <p>Public Model Context Protocol (MCP) server providing filesystem, shell, browser, and awesome-skills proxy capabilities.</p>
+                <span class="hub-link">Connect to endpoint</span>
+            </a>
+
+        </section>
+
+        <section class="overview-grid">
+            <div class="info-panel">
+                <span class="panel-kicker">Available models</span>
+                <h3>Current public inventory</h3>
+                <ul class="model-list">
+                    <li><code>Arbiter-GL9b</code> &mdash; 9B GLM-4 base</li>
+                    <li><code>cerberus-4b-v2-abliterated</code> &mdash; 4B refusal-ablated</li>
+                    <li><code>gamma3_1b_bdpo</code> &mdash; 1B BDPO-tuned, refusal-ablated, CPU-friendly</li>
+                </ul>
+                <p>The gateway exposes the currently allowed models, and the CDN exposes downloadable model directories.</p>
+            </div>
+
+            <div class="info-panel">
+                <span class="panel-kicker">Integration notes</span>
+                <h3>What to expect</h3>
+                <ul class="notes-list">
+                    <li>The gateway follows the OpenAI chat shape.</li>
+                    <li>The CDN is public and CORS-enabled.</li>
+                    <li>Range requests are supported for large model downloads.</li>
+                    <li>The public MCP Skills Server is fully CORS-enabled and available over Server-Sent Events (SSE).</li>
+                </ul>
+            </div>
+        </section>
+
+        <footer class="hub-footer">
+            <p>CerberusAI © 2026 — Docs hub for gateway access, downloads, and account flow.</p>
+        </footer>
+    </main>
+
+    <script>
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    document.getElementById("particles").appendChild(canvas);
+    let width, height, particles = [];
+    function init() {
+        width = canvas.width = window.innerWidth;
+        height = canvas.height = window.innerHeight;
+        const count = width < 600 ? 18 : 34;
+        particles = [];
+        for (let i = 0; i < count; i++) {
+            particles.push({
+                x: Math.random() * width,
+                y: Math.random() * height,
+                size: Math.random() * 2 + 0.5,
+                vx: (Math.random() - 0.5) * 0.3,
+                vy: (Math.random() - 0.5) * 0.3,
+                opacity: Math.random() * 0.35 + 0.08
+            });
+        }
+    }
+    function draw() {
+        if (window.__motionPaused) { requestAnimationFrame(draw); return; }
+        ctx.clearRect(0, 0, width, height);
+        particles.forEach(p => {
+            p.x += p.vx;
+            p.y += p.vy;
+            if (p.x < 0 || p.x > width) p.vx *= -1;
+            if (p.y < 0 || p.y > height) p.vy *= -1;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fillStyle = "rgba(255, 26, 64, " + p.opacity + ")";
+            ctx.fill();
+        });
+        requestAnimationFrame(draw);
+    }
+    window.addEventListener("resize", init);
+    init();
+    draw();
+    </script>
+<!-- ============ MOTION TOGGLE (a11y) ============ -->
+<style>
+  #motion-toggle {
+    position: fixed; bottom: 18px; right: 18px; z-index: 99999;
+    padding: 10px 16px;
+    background: linear-gradient(135deg, #7e22ce 0%, #a855f7 100%);
+    border: 1.5px solid rgba(255, 255, 255, 0.35);
+    border-radius: 999px;
+    color: #fff; font-size: 12.5px; font-weight: 700;
+    letter-spacing: 0.7px; text-transform: uppercase;
+    cursor: pointer;
+    box-shadow: 0 4px 18px rgba(168, 85, 247, 0.45), 0 0 0 0 rgba(168, 85, 247, 0.5);
+    backdrop-filter: blur(8px);
+    display: inline-flex; align-items: center; gap: 8px;
+    transition: opacity .15s ease, transform .15s ease, box-shadow .15s ease;
+    opacity: 1;
+    font-family: 'Outfit', system-ui, -apple-system, sans-serif;
+    animation: motionTogglePulse 2.4s ease-in-out infinite;
+  }
+  @keyframes motionTogglePulse {
+    0%, 100% { box-shadow: 0 4px 18px rgba(168,85,247,.45), 0 0 0 0 rgba(168,85,247,.55); }
+    50%      { box-shadow: 0 4px 18px rgba(168,85,247,.45), 0 0 0 12px rgba(168,85,247,0); }
+  }
+  #motion-toggle:hover {
+    transform: translateY(-2px);
+    background: linear-gradient(135deg, #a855f7 0%, #c084fc 100%);
+  }
+  #motion-toggle:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+  #motion-toggle svg { display: block; }
+  body.motion-paused #motion-toggle {
+    background: linear-gradient(135deg, #1f2937 0%, #374151 100%);
+    animation: none;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.4);
+    opacity: 0.85;
+  }
+  body.motion-paused #motion-toggle:hover { opacity: 1; transform: translateY(-1px); }
+  /* Pause CSS animations */
+  body.motion-paused::before,
+  body.motion-paused::after,
+  body.motion-paused .matrix-column,
+  body.motion-paused .glow-orb,
+  body.motion-paused .hero-orbit,
+  body.motion-paused .shimmer-text,
+  body.motion-paused [data-animation] {
+    animation-play-state: paused !important;
+  }
+  body.motion-paused .particle-container > canvas { display: none !important; }
+  @media (prefers-reduced-motion: reduce) {
+    #motion-toggle { animation: none; }
+  }
+  @media (max-width: 480px) {
+    #motion-toggle { bottom: 12px; right: 12px; padding: 9px 14px; font-size: 11.5px; }
+  }
+</style>
+<button id="motion-toggle" type="button" aria-pressed="false"
+        aria-label="Pause Animation If You Feel Sick"
+        title="Pause Animation If You Feel Sick">
+  <svg id="motion-toggle-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+    <rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>
+  </svg>
+  <span id="motion-toggle-label">Pause motion</span>
+</button>
+<script>
+(function(){
+  var KEY = 'cerb_motion_paused';
+  var ls = null;
+  try { ls = window.localStorage; } catch(e) {}
+  var stored = ls && ls.getItem(KEY);
+  var prefersReduced = false;
+  try { prefersReduced = matchMedia('(prefers-reduced-motion: reduce)').matches; } catch(e) {}
+  var paused = stored === null ? prefersReduced : stored === '1';
+  var ICONS = {
+    pause: '<rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/>',
+    play:  '<path d="M7 4l13 8-13 8V4z"/>'
+  };
+  function apply(){
+    document.body.classList.toggle('motion-paused', paused);
+    window.__motionPaused = paused;
+    var btn = document.getElementById('motion-toggle');
+    var icon = document.getElementById('motion-toggle-icon');
+    var label = document.getElementById('motion-toggle-label');
+    if (btn) {
+      btn.setAttribute('aria-pressed', paused ? 'true' : 'false');
+      var t = paused ? 'Resume Animation' : 'Pause Animation If You Feel Sick';
+      btn.setAttribute('aria-label', t);
+      btn.setAttribute('title', t);
+    }
+    if (icon) icon.innerHTML = paused ? ICONS.play : ICONS.pause;
+    if (label) label.textContent = paused ? 'Resume motion' : 'Pause motion';
+  }
+  function init(){
+    apply();
+    var btn = document.getElementById('motion-toggle');
+    if (btn) btn.addEventListener('click', function(){
+      paused = !paused;
+      if (ls) { try { ls.setItem(KEY, paused ? '1' : '0'); } catch(e) {} }
+      apply();
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
+</script>
+<!-- ============ END MOTION TOGGLE ============ -->
+
+</body>
+</html>

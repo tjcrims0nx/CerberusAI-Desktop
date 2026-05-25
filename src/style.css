@@ -667,3 +667,42 @@ a:hover { color: #d8b4fe; }
   align-items: center;
   justify-content: center;
 }
+.beta-update-pill {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  background: rgba(15, 15, 15, 0.9);
+  border: 1px solid rgba(234, 179, 8, 0.4);
+  color: #eab308;
+  padding: 12px 24px;
+  border-radius: 9999px;
+  font-family: 'Inter', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  z-index: 9999;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5), inset 0 0 10px rgba(234, 179, 8, 0.1);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  backdrop-filter: blur(8px);
+}
+
+.beta-update-pill:hover {
+  transform: translateY(-2px);
+  background: rgba(30, 30, 30, 0.95);
+  border-color: rgba(234, 179, 8, 0.6);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6), inset 0 0 15px rgba(234, 179, 8, 0.2);
+}
+
+.beta-update-pill:active {
+  transform: translateY(0);
+}
+
+.beta-update-pill:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
