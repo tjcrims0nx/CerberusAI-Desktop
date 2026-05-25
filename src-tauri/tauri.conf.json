@@ -61,7 +61,10 @@
       }
     },
     "fileAssociations": [],
-    "createUpdaterArtifacts": false
+    "createUpdaterArtifacts": false,
+    "externalBin": [
+      "../src-python/airllm-sidecar"
+    ]
   },
   "plugins": {}
 }

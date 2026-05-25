@@ -7,7 +7,7 @@
 //!     daemon at http://127.0.0.1:11434  (`list_local`, `stream_chat_local`,
 //!     `pull_model`, `local_status`).
 
-use crate::{ChatMessage, ChatStreamChunk};
+use crate::{ChatMessage, ChatStreamChunk, ToolCallChunk, ToolCallFunction};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -877,6 +877,20 @@ pub async fn pull_model(
 
 // ─── Local Ollama: chat streaming ─────────────────────────────────────────
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OllamaFunctionDef {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct OllamaToolDef {
+    #[serde(rename = "type")]
+    pub kind: String, // always "function"
+    pub function: OllamaFunctionDef,
+}
+
 #[derive(Serialize)]
 struct LocalChatOptions {
     num_ctx: u32,
@@ -892,12 +906,27 @@ struct LocalChatReq<'a> {
     stream: bool,
     options: LocalChatOptions,
     keep_alive: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<&'a [OllamaToolDef]>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct OllamaToolCallFunction {
+    name: String,
+    arguments: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct OllamaToolCall {
+    function: OllamaToolCallFunction,
 }
 
 #[derive(Deserialize)]
 struct LocalChatLineMsg {
     #[serde(default)]
     content: String,
+    #[serde(default)]
+    tool_calls: Option<Vec<OllamaToolCall>>,
 }
 
 #[derive(Deserialize)]
@@ -921,6 +950,7 @@ struct LocalChatLine {
 pub async fn stream_chat_local(
     model: String,
     messages: Vec<ChatMessage>,
+    tools: Option<Vec<OllamaToolDef>>,
     out: Channel<ChatStreamChunk>,
     mut cancel_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), anyhow::Error> {
@@ -931,6 +961,7 @@ pub async fn stream_chat_local(
         stream: true,
         options: LocalChatOptions { num_ctx: 2048, num_predict: 2048, num_batch: Some(512) },
         keep_alive: "10m",
+        tools: tools.as_deref(),
     };
 
     let resp = tokio::select! {
@@ -942,6 +973,7 @@ pub async fn stream_chat_local(
                 done: true,
                 error: None,
                 ttft_ms: None, tps: None,
+                tool_calls: None,
             });
             return Ok(());
         }
@@ -958,6 +990,7 @@ pub async fn stream_chat_local(
             };
             let _ = out.send(ChatStreamChunk {
                 delta: String::new(), done: true, error: Some(err.clone()), ttft_ms: None, tps: None,
+                tool_calls: None,
             });
             return Err(anyhow::anyhow!(err));
         }
@@ -969,6 +1002,7 @@ pub async fn stream_chat_local(
         let err = format!("ollama returned {status}: {text}");
         let _ = out.send(ChatStreamChunk {
             delta: String::new(), done: true, error: Some(err.clone()), ttft_ms: None, tps: None,
+            tool_calls: None,
         });
         return Err(anyhow::anyhow!(err));
     }
@@ -996,6 +1030,7 @@ pub async fn stream_chat_local(
                     done: true,
                     error: None,
                     ttft_ms: None, tps: None,
+                    tool_calls: None,
                 });
                 return Ok(());
             }
@@ -1010,6 +1045,7 @@ pub async fn stream_chat_local(
                     done: true,
                     error: Some("Ollama stopped responding (timeout). Try sending your message again.".into()),
                     ttft_ms: None, tps: None,
+                    tool_calls: None,
                 });
                 return Ok(());
             }
@@ -1033,11 +1069,27 @@ pub async fn stream_chat_local(
                                 let _ = out.send(ChatStreamChunk {
                                     delta: String::new(), done: true, error: Some(err),
                                     ttft_ms: None, tps: None,
+                                    tool_calls: None,
                                 });
                                 return Ok(());
                             }
-                            let delta = p.message.map(|m| m.content).unwrap_or_default();
-                            if ttft_ms.is_none() && !delta.is_empty() {
+                            let msg = p.message;
+                            let delta = msg.as_ref().map(|m| m.content.clone()).unwrap_or_default();
+                            let chunk_tool_calls: Option<Vec<ToolCallChunk>> = msg
+                                .as_ref()
+                                .and_then(|m| m.tool_calls.as_ref())
+                                .map(|tcs| {
+                                    tcs.iter()
+                                        .map(|tc| ToolCallChunk {
+                                            id: None,
+                                            function: ToolCallFunction {
+                                                name: tc.function.name.clone(),
+                                                arguments: tc.function.arguments.clone(),
+                                            },
+                                        })
+                                        .collect()
+                                });
+                            if ttft_ms.is_none() && (!delta.is_empty() || chunk_tool_calls.is_some()) {
                                 ttft_ms = Some(start_time.elapsed().as_millis() as u64);
                             }
                             
@@ -1054,6 +1106,7 @@ pub async fn stream_chat_local(
                                 delta, done: p.done, error: None,
                                 ttft_ms,
                                 tps: chunk_tps,
+                                tool_calls: chunk_tool_calls,
                             });
                             if p.done { return Ok(()); }
                         }
@@ -1066,6 +1119,7 @@ pub async fn stream_chat_local(
 
     let _ = out.send(ChatStreamChunk {
         delta: String::new(), done: true, error: None, ttft_ms: None, tps: None,
+        tool_calls: None,
     });
     Ok(())
 }

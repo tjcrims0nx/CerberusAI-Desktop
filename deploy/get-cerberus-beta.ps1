@@ -5,9 +5,9 @@
 # Or from cmd.exe (Win10+, curl is built-in):
 #   curl -sSL https://cerberusai.dev/get-beta -o "%TEMP%\get-cerberus-beta.ps1" && powershell -ep bypass -File "%TEMP%\get-cerberus-beta.ps1"
 #
-# This bootstrapper hands off to deploy/install.ps1 in the latest release (including pre-releases). That
-# script handles Ollama, WebView2, and the Cerberus app itself, so a fresh
-# Windows install ends up fully working.
+# This bootstrapper hands off to deploy/install.ps1 in the newest GitHub
+# prerelease. That script handles Ollama, WebView2, and the Cerberus app itself,
+# so a fresh Windows install ends up fully working.
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference    = "SilentlyContinue"
@@ -19,14 +19,15 @@ Write-Host ""
 
 $repoOwner = "tjcrims0nx"
 $repoName  = "CerberusAI-Desktop"
-# Use /releases to get the absolute latest release, which includes pre-releases
 $api       = "https://api.github.com/repos/$repoOwner/$repoName/releases"
 $tmp       = $env:TEMP
 
 try {
-    # Get the latest release (which is the first in the list, including pre-releases)
     $releases = Invoke-RestMethod -Uri $api -Headers @{ "User-Agent" = "CerberusBootstrap" } -TimeoutSec 15
-    $rel = $releases | Select-Object -First 1
+    $rel = $releases | Where-Object { $_.prerelease -eq $true -and $_.draft -eq $false } | Select-Object -First 1
+    if (-not $rel) {
+        throw "No public beta prerelease found. Visit https://github.com/$repoOwner/$repoName/releases"
+    }
     $tag = $rel.tag_name
 
     # 1. Pull the deploy/install.ps1 from the same release tag so the
@@ -40,7 +41,10 @@ try {
     } catch {
         # Fall back to the raw .exe path if the release tag predates the install.ps1 script.
         Write-Host "  Release $tag has no install.ps1; falling back to direct app installer." -ForegroundColor Yellow
-        $asset = $rel.assets | Where-Object { $_.name -match "(?i)cerberus.*-setup\.exe$" } | Select-Object -First 1
+        $asset = $rel.assets | Where-Object { $_.name -match "(?i)cerberus.*beta.*setup\.exe$" } | Select-Object -First 1
+        if (-not $asset) {
+            $asset = $rel.assets | Where-Object { $_.name -match "(?i)cerberus.*-setup\.exe$" } | Select-Object -First 1
+        }
         if (-not $asset) {
             $asset = $rel.assets | Where-Object { $_.name -match "\.exe$" } | Select-Object -First 1
         }
