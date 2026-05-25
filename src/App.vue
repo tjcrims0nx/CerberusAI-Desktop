@@ -363,6 +363,8 @@ const pulling = ref<{
   name: string;
   pct: number;
   status: string;
+  completed?: number;
+  total?: number;
   /** Bytes/sec averaged over the last few seconds */
   bps?: number;
   /** Seconds remaining (rough estimate) */
@@ -395,26 +397,33 @@ function fmtEta(secs?: number): string {
   return `${secs}s`;
 }
 
+function fmtDownloadBytes(done?: number, total?: number): string {
+  if (!done && !total) return "";
+  if (!total) return formatBytes(done ?? 0);
+  return `${formatBytes(done ?? 0)} / ${formatBytes(total)}`;
+}
+
+function downloadPhase(status?: string): string {
+  const s = (status || "").toLowerCase();
+  if (s.includes("import") || s.includes("register") || s.includes("create")) return "IMPORTING";
+  if (s.includes("verif") || s.includes("final")) return "VERIFYING";
+  if (s.includes("resume")) return "RESUMING";
+  if (s.includes("error")) return "ERROR";
+  return "PULLING MODEL";
+}
+
 // Every allowlisted model, paired with whether it's already pulled locally.
 // Drives the dropdown so users can pick undownloaded models and have them
 // auto-pulled (LM Studio-style).
 const allModelChoices = computed(() => {
   const local = new Set(models.value.map((m) => modelKey(m.name)));
-  return allowedModels.value
-    .map((m) => ({
-      name: m.id,
-      downloaded: local.has(modelKey(m.id)),
-      description: m.description,
-      quants: m.quants,
-      quantSizes: m.quant_sizes ?? {},
-    }))
-    .filter((m) => {
-      const sizes = Object.values(m.quantSizes) as number[];
-      if (sizes.length === 0) return true; // Keep if no size info is available
-      // Only keep the model if at least one quant fits or is tight (or unknown).
-      // Discard if ALL quants are "too-big".
-      return sizes.some((size) => quantFit(size) !== "too-big");
-    });
+  return allowedModels.value.map((m) => ({
+    name: m.id,
+    downloaded: local.has(modelKey(m.id)),
+    description: m.description,
+    quants: m.quants,
+    quantSizes: m.quant_sizes ?? {},
+  }));
 });
 const activeChat = computed<Chat | null>(() =>
   chats.value.find((c) => c.id === activeId.value) ?? null
@@ -977,6 +986,8 @@ async function pullModel(name: string, quant?: string) {
       name: displayName,
       pct,
       status: p.status || "downloading",
+      completed: p.completed,
+      total: p.total,
       bps: p.bytes_per_second,
       eta: p.eta_seconds,
       resumed: p.resumed ?? pulling.value?.resumed,
@@ -1182,16 +1193,25 @@ onMounted(async () => {
     @submitKey="apiKeyDraft = $event; submitKey()"
   />
 
-  <!-- Top-of-window download progress bar -->
+  <!-- Top-of-window model pull loader -->
   <div v-if="pulling" class="download-bar" role="progressbar" :aria-valuenow="pulling.pct" aria-valuemin="0" aria-valuemax="100">
+    <div class="download-bar-glow"></div>
     <div class="download-bar-fill" :class="{ indeterminate: pulling.pct === 0 }" :style="{ width: pulling.pct > 0 ? pulling.pct + '%' : undefined }"></div>
-    <div class="download-bar-text">
-      <span class="download-bar-label">DOWNLOADING</span>
-      <code class="download-bar-name" :title="pulling.name">{{ pulling.name }}</code>
-      <span v-if="pulling.resumed" class="download-bar-resumed" title="Resumed previous download">↻</span>
-      <span class="download-bar-status">{{ pulling.status }}</span>
-      <span v-if="pulling.bps" class="download-bar-rate">{{ fmtRate(pulling.bps) }}</span>
-      <span v-if="pulling.eta && pulling.eta > 0" class="download-bar-eta">ETA {{ fmtEta(pulling.eta) }}</span>
+    <div class="download-loader">
+      <div class="download-spinner" aria-hidden="true"></div>
+      <div class="download-copy">
+        <div class="download-primary">
+          <span class="download-bar-label">{{ downloadPhase(pulling.status) }}</span>
+          <code class="download-bar-name" :title="pulling.name">{{ pulling.name }}</code>
+          <span v-if="pulling.resumed" class="download-bar-resumed" title="Resumed previous download">RESUMED</span>
+        </div>
+        <div class="download-secondary">
+          <span class="download-bar-status">{{ pulling.status }}</span>
+          <span v-if="fmtDownloadBytes(pulling.completed, pulling.total)" class="download-bar-bytes">{{ fmtDownloadBytes(pulling.completed, pulling.total) }}</span>
+          <span v-if="pulling.bps" class="download-bar-rate">{{ fmtRate(pulling.bps) }}</span>
+          <span v-if="pulling.eta && pulling.eta > 0" class="download-bar-eta">ETA {{ fmtEta(pulling.eta) }}</span>
+        </div>
+      </div>
       <span class="download-bar-pct">{{ pulling.pct }}%</span>
       <button class="download-bar-cancel" title="Cancel download" @click="cancelDownload">✕</button>
     </div>
@@ -2189,20 +2209,25 @@ onMounted(async () => {
   top: 0;
   left: 0;
   right: 0;
-  height: 36px;
+  height: 68px;
   z-index: 900;
-  background: rgba(2, 2, 4, 0.92);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--glass-border-red);
+  background:
+    radial-gradient(circle at 8% 0%, rgba(220, 38, 38, 0.26), transparent 34%),
+    radial-gradient(circle at 90% 0%, rgba(124, 58, 237, 0.24), transparent 30%),
+    rgba(2, 2, 4, 0.94);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid rgba(248, 113, 113, 0.28);
   overflow: hidden;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.58), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 .download-bar-fill {
   position: absolute;
-  inset: 0 auto 0 0;
-  background: linear-gradient(90deg, var(--red-600), var(--red-400));
-  box-shadow: 0 0 16px var(--red-glow), inset 0 0 12px rgba(255, 80, 80, 0.4);
+  left: 0;
+  bottom: 0;
+  height: 5px;
+  background: linear-gradient(90deg, #dc2626, #f97316, #7c3aed);
+  box-shadow: 0 0 18px rgba(248, 113, 113, 0.65), inset 0 0 12px rgba(255, 255, 255, 0.24);
   transition: width 240ms var(--ease-out);
   width: 0;
 }
@@ -2214,20 +2239,60 @@ onMounted(async () => {
   0%   { left: -30%; }
   100% { left: 100%; }
 }
-.download-bar-text {
+.download-bar-glow {
+  position: absolute;
+  inset: 0;
+  opacity: 0.36;
+  background: linear-gradient(115deg, transparent 12%, rgba(255, 255, 255, 0.12) 34%, transparent 52%);
+  animation: download-sheen 2.4s ease-in-out infinite;
+}
+@keyframes download-sheen {
+  0% { transform: translateX(-45%); }
+  100% { transform: translateX(45%); }
+}
+.download-loader {
   position: relative;
   z-index: 1;
   height: 100%;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 0 16px;
+  gap: 14px;
+  padding: 0 18px;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.72rem;
   color: #fff;
   text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
   white-space: nowrap;
   overflow: hidden;
+}
+.download-spinner {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.13);
+  border-top-color: #fb7185;
+  border-right-color: #a78bfa;
+  box-shadow: 0 0 22px rgba(248, 113, 113, 0.22);
+  animation: download-spin 800ms linear infinite;
+}
+@keyframes download-spin {
+  to { transform: rotate(360deg); }
+}
+.download-copy {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  flex: 1;
+}
+.download-primary,
+.download-secondary {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.download-secondary {
+  font-size: 0.72rem;
 }
 .download-bar-label {
   font-weight: 800;
@@ -2244,6 +2309,7 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  max-width: min(52vw, 560px);
 }
 .download-bar-status {
   color: rgba(255, 255, 255, 0.75);
@@ -2254,12 +2320,16 @@ onMounted(async () => {
   text-overflow: ellipsis;
 }
 .download-bar-pct {
+  min-width: 58px;
   font-weight: 800;
-  letter-spacing: 1px;
+  font-size: 1.05rem;
+  letter-spacing: 0;
+  text-align: right;
   flex-shrink: 0;
 }
 .download-bar-rate,
-.download-bar-eta {
+.download-bar-eta,
+.download-bar-bytes {
   font-size: 0.78rem;
   color: rgba(255, 255, 255, 0.7);
   font-variant-numeric: tabular-nums;
@@ -2267,14 +2337,17 @@ onMounted(async () => {
   white-space: nowrap;
 }
 .download-bar-resumed {
-  color: rgba(255, 200, 100, 0.95);
-  font-size: 0.95rem;
+  color: #fde68a;
+  font-size: 0.66rem;
+  border: 1px solid rgba(253, 230, 138, 0.24);
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: rgba(253, 230, 138, 0.08);
   flex-shrink: 0;
 }
 .download-bar-cancel {
-  margin-left: auto;
   flex-shrink: 0;
-  background: none;
+  background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.25);
   color: rgba(255, 255, 255, 0.7);
   border-radius: 4px;
@@ -2294,7 +2367,7 @@ onMounted(async () => {
   border-color: rgba(255, 80, 80, 0.6);
 }
 .shell-with-progress {
-  padding-top: 36px;
+  padding-top: 68px;
 }
 
 /* Pulling banner variant */
