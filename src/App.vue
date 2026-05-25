@@ -1100,6 +1100,7 @@ onMounted(async () => {
   await Promise.all([
     detectHardware(),
     checkForUpdate(),
+    checkForBetaUpdate(),
     apiKey.value ? checkApi() : Promise.resolve(),
     apiKey.value ? refreshAllowedModels() : Promise.resolve(),
   ]);
