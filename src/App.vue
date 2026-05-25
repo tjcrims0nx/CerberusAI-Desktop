@@ -1466,6 +1466,7 @@ onMounted(async () => {
             <strong style="color: #fff">Enter</strong> to send • <strong>Shift+Enter</strong> for newline
           </div>
         </div>
+      </div>
 
         <button
           v-if="betaUpdateInfo?.available && !updating"
