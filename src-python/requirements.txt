@@ -2,4 +2,4 @@ fastapi==0.111.0
 uvicorn==0.29.0
 pydantic==2.7.1
 airllm==2.10.1
-torch==2.3.0
+torch==2.8.0
