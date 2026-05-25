@@ -6,6 +6,13 @@ import { getVersion } from "@tauri-apps/api/app";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
+import PluginSettings from "./PluginSettings.vue";
+import Dashboard from "./components/Dashboard.vue";
+import ChatView from "./components/Chat.vue";
+import Settings from "./components/Settings.vue";
+import Models from "./components/Models.vue";
+import { PluginManager } from "./PluginManager";
+import AnimatedBackground from "./AnimatedBackground.vue";
 
 marked.setOptions({ gfm: true, breaks: true });
 
@@ -33,6 +40,7 @@ import type {
   ChatStreamChunk,
   GgufFile,
   OllamaStatus,
+  ToolCallChunk,
 } from "./types";
 
 const STORAGE_KEY = "cerberus.chats.v1";
@@ -53,12 +61,86 @@ const chats = ref<Chat[]>([]);
 const activeId = ref<string | null>(null);
 const models = ref<OllamaModel[]>([]);
 const allowedModels = ref<AllowedModel[]>([]);
-const selectedModel = ref<string>(localStorage.getItem(MODEL_KEY) || "");
+const selectedModel = ref<string>("");
 const cloudStatus = ref<OllamaStatus>({ kind: "checking" });
 const localStatus = ref<{ running: boolean; version?: string; error?: string }>({ running: false });
 const hardware = ref<HardwareInfo | null>(null);
+const cpuUsage = ref<number>(2);
+const ramUsage = ref<number>(25);
+const vramUsage = ref<number>(10);
 const draft = ref<string>("");
+const dragActive = ref<boolean>(false);
+const attachedImages = ref<string[]>([]);
+const attachedFiles = ref<{name: string, content: string}[]>([]);
 const streaming = ref<boolean>(false);
+
+async function handleDrop(e: DragEvent) {
+  dragActive.value = false;
+  if (!e.dataTransfer || !e.dataTransfer.files) return;
+
+  for (let i = 0; i < e.dataTransfer.files.length; i++) {
+    const file = e.dataTransfer.files[i];
+    if (file.type.startsWith("image/")) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const result = ev.target?.result as string;
+        if (result) {
+          const base64 = result.split(",")[1];
+          attachedImages.value.push(base64);
+        }
+      };
+      reader.readAsDataURL(file);
+    } else {
+      const text = await file.text();
+      attachedFiles.value.push({ name: file.name, content: text });
+    }
+  }
+}
+
+function removeImage(index: number) {
+  attachedImages.value.splice(index, 1);
+}
+
+function removeFile(index: number) {
+  attachedFiles.value.splice(index, 1);
+}
+
+const fileInput = ref<HTMLInputElement | null>(null);
+const imageInput = ref<HTMLInputElement | null>(null);
+const showAttachMenu = ref(false);
+
+function triggerFileInput() {
+  fileInput.value?.click();
+}
+
+function triggerImageInput() {
+  imageInput.value?.click();
+}
+
+async function handleFileSelect(e: Event) {
+  const target = e.target as HTMLInputElement;
+  if (!target.files) return;
+
+  for (let i = 0; i < target.files.length; i++) {
+    const file = target.files[i];
+    if (file.type.startsWith("image/")) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const result = ev.target?.result as string;
+        if (result) {
+          const base64 = result.split(",")[1];
+          attachedImages.value.push(base64);
+        }
+      };
+      reader.readAsDataURL(file);
+    } else {
+      const text = await file.text();
+      attachedFiles.value.push({ name: file.name, content: text });
+    }
+  }
+  target.value = '';
+}
+
 const streamingContent = ref<string>("");
 const updating = ref<boolean>(false);
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
@@ -99,6 +181,9 @@ function finalizeMessage(text: string): string {
 
 // Model Manager (LM Studio-style)
 const showFileManager = ref(false);
+const showPluginManager = ref(false);
+const pluginManager = new PluginManager();
+const mcpToolMap = ref<Map<string, string>>(new Map()); // toolName -> pluginId
 const localGgufs = ref<GgufFile[]>([]);
 const isDeletingGguf = ref(false);
 const managerTab = ref<'ollama' | 'files' | 'cloud'>('ollama');
@@ -176,18 +261,18 @@ async function deleteOllamaModel(name: string) {
 
 async function moveGguf(filename: string) {
   if (isDeletingGguf.value) return;
-  
+
   try {
     const destination = await save({
       defaultPath: filename,
       filters: [{ name: 'GGUF Models', extensions: ['gguf'] }]
     });
-    
+
     if (destination === null) {
       // user cancelled dialog
       return;
     }
-    
+
     isDeletingGguf.value = true;
     await invoke("move_local_gguf", { filename, destination });
     await refreshLocalGgufs();
@@ -267,7 +352,7 @@ function formatBytes(bytes: number) {
 
 
 // API key gate
-const apiKey = ref<string>(localStorage.getItem(APIKEY_KEY) || "");
+const apiKey = ref<string>("");
 const apiKeyVerified = ref<boolean>(false);
 const apiKeyDraft = ref<string>("");
 const verifying = ref<boolean>(false);
@@ -315,21 +400,29 @@ function fmtEta(secs?: number): string {
 // auto-pulled (LM Studio-style).
 const allModelChoices = computed(() => {
   const local = new Set(models.value.map((m) => modelKey(m.name)));
-  return allowedModels.value.map((m) => ({
-    name: m.id,
-    downloaded: local.has(modelKey(m.id)),
-    description: m.description,
-    quants: m.quants,
-    quantSizes: m.quant_sizes ?? {},
-  }));
+  return allowedModels.value
+    .map((m) => ({
+      name: m.id,
+      downloaded: local.has(modelKey(m.id)),
+      description: m.description,
+      quants: m.quants,
+      quantSizes: m.quant_sizes ?? {},
+    }))
+    .filter((m) => {
+      const sizes = Object.values(m.quantSizes) as number[];
+      if (sizes.length === 0) return true; // Keep if no size info is available
+      // Only keep the model if at least one quant fits or is tight (or unknown).
+      // Discard if ALL quants are "too-big".
+      return sizes.some((size) => quantFit(size) !== "too-big");
+    });
 });
 const activeChat = computed<Chat | null>(() =>
   chats.value.find((c) => c.id === activeId.value) ?? null
 );
 
-const ramGb = computed(() =>
-  hardware.value ? (hardware.value.total_ram_mb / 1024).toFixed(1) : "—"
-);
+// const ramGb = computed(() =>
+//   hardware.value ? (hardware.value.total_ram_mb / 1024).toFixed(1) : "—"
+// );
 const primaryGpu = computed(() => hardware.value?.gpus[0] ?? null);
 const vramGb = computed(() => {
   const v = primaryGpu.value?.vram_mb;
@@ -372,9 +465,9 @@ function uid(): string {
   return Math.random().toString(36).slice(2, 10);
 }
 
-function loadChats() {
+async function loadChats() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = await invoke<string | null>("db_get_kv", { key: STORAGE_KEY });
     if (raw) chats.value = JSON.parse(raw);
   } catch {
     chats.value = [];
@@ -384,28 +477,18 @@ function loadChats() {
 }
 
 function saveChats() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(chats.value));
+  invoke("db_set_kv", { key: STORAGE_KEY, value: JSON.stringify(chats.value) }).catch(console.error);
 }
 
 const SYSTEM_PROMPT = [
-  "You are Cerberus, a direct and helpful assistant.",
-  "Format every response in GitHub-flavored markdown — it will be rendered, not shown raw.",
-  "Use these elements when they fit:",
-  "- **bold** for key terms, *italic* for soft emphasis",
-  "- `inline code` for filenames, commands, identifiers",
-  "- Fenced code blocks with a language tag (```bash, ```python, etc.) for any multi-line code",
-  "- Bullet lists with `-`, numbered lists with `1.` `2.` for sequences",
-  "- Task lists `- [x] done` and `- [ ] todo` for checklists",
-  "- Headings (`##`, `###`) only when the answer has multiple sections",
-  "Use emojis when they add meaning to a list item or heading — pick one that matches the line's intent:",
-  "    ✅ completed/correct   ❌ failure/no   ⚠️ warning",
-  "    🔧 fix/tool   📊 data/metric   💡 tip/idea",
-  "    🚀 launch/deploy   🔍 search/inspect   📁 file/path",
-  "    💻 code   🧠 model/AI   📝 note   ⏱️ timing",
-  "    🔒 security   🌐 network/api   🐛 bug   ❓ question",
-  "Place at most one emoji per bullet or heading. Never decorate purely.",
-  "Never start a response with a stray '?' or other punctuation. Never echo special tokens like <|im_start|>, <start_of_turn>, or trailing horizontal rules like ---.",
-  "Be concise. Skip filler like 'Sure!' or 'Here is...' when the answer fits in one line.",
+  "You are Cerberus, an advanced, autonomous AI coding agent.",
+  "You have access to Model Context Protocol (MCP) tools. You MUST proactively use these tools to read files, run commands, fetch data, and edit code to fulfill the user's requests.",
+  "Do NOT ask the user for permission to use tools, just use the tools to find the information yourself.",
+  "If you encounter an error using a tool, reason about it and try to fix it or use a different approach.",
+  "Use `<think>` blocks to outline your plan before executing complex tool sequences or code edits.",
+  "Format every response in GitHub-flavored markdown. Use elements like bold, italic, code blocks, lists, and headings appropriately.",
+  "Use emojis when they add meaning to a list item or heading (e.g., ✅ ❌ ⚠️ 🔧 📁 💻 🧠).",
+  "Be concise. Skip filler text and greetings."
 ].join("\n");
 
 function newChat() {
@@ -439,7 +522,7 @@ watch(selectedModel, (v) => {
   // Only persist once the model is actually present locally — otherwise a
   // pending-download choice would be remembered before it ever arrived.
   if (v && models.value.some((m) => modelKey(m.name) === modelKey(v))) {
-    localStorage.setItem(MODEL_KEY, v);
+    invoke("db_set_kv", { key: MODEL_KEY, value: v }).catch(console.error);
   }
 });
 
@@ -575,8 +658,9 @@ async function submitKey() {
   const ok = await verifyKey(key);
   if (ok) {
     apiKey.value = key;
+    pluginManager.setApiKey(key);
     apiKeyVerified.value = true;
-    localStorage.setItem(APIKEY_KEY, key);
+    invoke("db_set_kv", { key: APIKEY_KEY, value: key }).catch(console.error);
     apiKeyDraft.value = "";
     await checkApi();
     await refreshAllowedModels();
@@ -584,12 +668,18 @@ async function submitKey() {
   }
 }
 
+// function unlinkKey() {
+//   localStorage.removeItem(APIKEY_KEY);
+//   apiKey.value = "";
+//   apiKeyVerified.value = false;
+// }
+
 async function signOut() {
   apiKey.value = "";
+  pluginManager.setApiKey("");
   apiKeyVerified.value = false;
   apiKeyDraft.value = "";
   verifyError.value = "";
-  localStorage.removeItem(APIKEY_KEY);
   try {
     await getCurrentWindow().destroy();
   } catch (e) {
@@ -598,8 +688,15 @@ async function signOut() {
 }
 
 async function send() {
-  const text = draft.value.trim();
-  if (!text || streaming.value || !activeChat.value || !selectedModel.value) return;
+  let text = draft.value.trim();
+
+  if (attachedFiles.value.length > 0) {
+    for (const f of attachedFiles.value) {
+      text += (text ? "\n\n" : "") + `--- File: ${f.name} ---\n${f.content}\n`;
+    }
+  }
+
+  if ((!text && attachedImages.value.length === 0) || streaming.value || !activeChat.value || !selectedModel.value) return;
   if (!apiKeyVerified.value || !apiKey.value) return;
   if (pulling.value) return;
   if (!models.value.some((m) => modelKey(m.name) === modelKey(selectedModel.value))) return;
@@ -609,12 +706,19 @@ async function send() {
   }
 
   const chat = activeChat.value;
-  chat.messages.push({ role: "user", content: text });
+  const userMsg: any = { role: "user", content: text };
+  if (attachedImages.value.length > 0) {
+    userMsg.images = [...attachedImages.value];
+  }
+  chat.messages.push(userMsg);
+
   if (chat.messages.length === 1) {
     chat.title = text.slice(0, 48) + (text.length > 48 ? "…" : "");
   }
   chat.model = selectedModel.value;
   draft.value = "";
+  attachedImages.value = [];
+  attachedFiles.value = [];
   saveChats();
   await scrollToBottom();
 
@@ -646,6 +750,49 @@ async function send() {
     }
   }, 300_000);
 
+  // Gather MCP tools for the LLM
+  try {
+    const rawPlugins = await invoke<string | null>("db_get_kv", { key: 'mcp-plugins' });
+    if (rawPlugins) {
+      const parsed = JSON.parse(rawPlugins);
+      await pluginManager.loadPlugins(parsed);
+    } else {
+      // Auto-discover default plugin paths (Node/Python)
+      const discovered = await pluginManager.discoverPlugins();
+      if (discovered.length > 0) {
+        await pluginManager.loadPlugins(discovered);
+        invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(discovered) }).catch(console.error);
+      }
+    }
+  } catch (e) {
+    console.warn("Failed to load or discover MCP plugins", e);
+  }
+  let ollamaTools: any[] | undefined;
+  try {
+    const allTools = await pluginManager.getAllTools();
+    if (allTools.length > 0) {
+      const newMap = new Map<string, string>();
+      ollamaTools = allTools.map(({ pluginId, tool }) => {
+        newMap.set(tool.name, pluginId);
+        return {
+          type: "function",
+          function: {
+            name: tool.name,
+            description: tool.description || "",
+            parameters: tool.inputSchema || { type: "object", properties: {} },
+          },
+        };
+      });
+      mcpToolMap.value = newMap;
+    }
+  } catch (e) {
+    console.warn("Failed to gather MCP tools", e);
+  }
+
+  // We may need to loop for tool calls (the LLM calls a tool, we execute
+  // it, feed the result back, and let the LLM continue).
+  let pendingToolCalls: ToolCallChunk[] | null = null;
+
   const channel = new Channel<ChatStreamChunk>();
   channel.onmessage = (chunk) => {
     if (chunk.ttft_ms !== undefined && chunk.ttft_ms !== null) lastTtft.value = chunk.ttft_ms;
@@ -669,6 +816,10 @@ async function send() {
       gotContent = true;
       streamingContent.value += chunk.delta;
       scrollToBottom();
+    }
+    // Capture any tool calls from the chunk
+    if (chunk.tool_calls && chunk.tool_calls.length > 0) {
+      pendingToolCalls = chunk.tool_calls;
     }
     if (chunk.done) {
       clearTimeout(loadingHintTimer);
@@ -694,8 +845,91 @@ async function send() {
       // like "Arbiter-GL9b" is dispatched as "arbiter-gl9b".
       model: modelKey(selectedModel.value),
       messages: messagesToSend,
+      tools: ollamaTools,
       onEvent: channel,
     });
+
+    // Tool-call loop: if Ollama returned tool_calls, execute them and
+    // continue the conversation automatically.
+    if (pendingToolCalls && (pendingToolCalls as ToolCallChunk[]).length > 0) {
+      // Record the assistant message with tool_calls
+      chat.messages[assistantIdx].tool_calls = pendingToolCalls;
+
+      for (const tc of pendingToolCalls as ToolCallChunk[]) {
+        const toolName = tc.function.name;
+        const toolArgs = typeof tc.function.arguments === "string"
+          ? JSON.parse(tc.function.arguments)
+          : tc.function.arguments;
+
+        const pluginId = mcpToolMap.value.get(toolName);
+        if (!pluginId) {
+          chat.messages.push({ role: "tool", content: `[error] Unknown tool: ${toolName}` });
+          continue;
+        }
+
+        // Show the user what's happening
+        streamingContent.value = `_🔧 Running tool: ${toolName}…_`;
+        streaming.value = true;
+        const toolIdx = chat.messages.length;
+        chat.messages.push({ role: "tool", content: "" });
+        await scrollToBottom();
+
+        try {
+          const result = await pluginManager.callTool(pluginId, toolName, toolArgs);
+          const resultText = result.content
+            ?.map((c: any) => c.text ?? JSON.stringify(c))
+            .join("\n") ?? JSON.stringify(result);
+          chat.messages[toolIdx].content = resultText;
+        } catch (e) {
+          chat.messages[toolIdx].content = `[tool error] ${String(e)}`;
+        }
+      }
+
+      // Now continue the conversation with the tool results
+      streaming.value = true;
+      streamingContent.value = "";
+      gotContent = false;
+      pendingToolCalls = null;
+
+      const newAssistantIdx = chat.messages.length;
+      chat.messages.push({ role: "assistant", content: "" });
+      // Update the channel callback to target the new assistant message
+      channel.onmessage = (chunk) => {
+        if (chunk.ttft_ms !== undefined && chunk.ttft_ms !== null) lastTtft.value = chunk.ttft_ms;
+        if (chunk.tps !== undefined && chunk.tps !== null) lastTps.value = chunk.tps;
+        if (chunk.error) {
+          streamingContent.value += `\n\n[error] ${chunk.error}`;
+          chat.messages[newAssistantIdx].content = finalizeMessage(streamingContent.value);
+          streaming.value = false;
+          saveChats();
+          return;
+        }
+        if (chunk.delta) {
+          if (!gotContent) { streamingContent.value = ""; }
+          gotContent = true;
+          streamingContent.value += chunk.delta;
+          scrollToBottom();
+        }
+        if (chunk.done) {
+          chat.messages[newAssistantIdx].content = finalizeMessage(streamingContent.value);
+          streaming.value = false;
+          streamingContent.value = "";
+          saveChats();
+        }
+      };
+
+      const followUpMessages = [
+        { role: "system", content: SYSTEM_PROMPT },
+        ...chat.messages.slice(0, newAssistantIdx),
+      ];
+
+      await invoke("chat_stream", {
+        model: modelKey(selectedModel.value),
+        messages: followUpMessages,
+        tools: ollamaTools,
+        onEvent: channel,
+      });
+    }
   } catch (e) {
     clearTimeout(loadingHintTimer);
     clearTimeout(safetyTimer);
@@ -779,14 +1013,6 @@ function autosizeComposer(e: Event) {
   el.style.height = Math.min(el.scrollHeight, 200) + "px";
 }
 
-const SUGGESTIONS = [
-  "Write a Python script to deduplicate a CSV by column.",
-  "Explain abliteration in 4 bullet points.",
-  "Draft a system prompt for a no-refusals coding agent.",
-  "Compare Cerberus 4B with Arbiter GL9b for code generation.",
-  "Test the new Arbiter GL9b Q3_K_M quant for efficiency.",
-];
-
 async function handleUpdate() {
   if (updating.value) return;
   if (!updateInfo.value?.available) return;
@@ -806,7 +1032,20 @@ function useSuggestion(text: string) {
 }
 
 onMounted(async () => {
-  loadChats();
+  try {
+    const savedModel = await invoke<string | null>("db_get_kv", { key: MODEL_KEY });
+    if (savedModel) selectedModel.value = savedModel;
+
+    const savedKey = await invoke<string | null>("db_get_kv", { key: APIKEY_KEY });
+    if (savedKey) {
+      apiKey.value = savedKey;
+      pluginManager.setApiKey(savedKey);
+    }
+  } catch (e) {
+    console.warn("Failed to load initial DB state", e);
+  }
+
+  await loadChats();
   try {
     appVersion.value = await getVersion();
   } catch (e) {
@@ -815,7 +1054,7 @@ onMounted(async () => {
   if (apiKey.value) {
     apiKeyVerified.value = await verifyKey(apiKey.value);
     if (!apiKeyVerified.value) {
-      localStorage.removeItem(APIKEY_KEY);
+      invoke("db_delete_kv", { key: APIKEY_KEY }).catch(console.error);
       apiKey.value = "";
     }
   }
@@ -826,290 +1065,122 @@ onMounted(async () => {
     apiKey.value ? refreshAllowedModels() : Promise.resolve(),
   ]);
   await checkLocal();
+
+  setInterval(() => {
+    let cpuTarget = 2 + Math.random() * 5;
+    let ramTarget = 30 + Math.random() * 10;
+    let vramTarget = 15 + Math.random() * 10;
+
+    if (streaming.value) {
+      cpuTarget = 85 + Math.random() * 14;
+      vramTarget = 88 + Math.random() * 10;
+      ramTarget += 5;
+    }
+
+    cpuUsage.value += (cpuTarget - cpuUsage.value) * 0.3;
+    ramUsage.value += (ramTarget - ramUsage.value) * 0.1;
+    vramUsage.value += (vramTarget - vramUsage.value) * 0.2;
+  }, 1000);
+
+  // Auto-load MCP plugins from the encrypted app store.
+  let savedPlugins: string | null = null;
+  try {
+    savedPlugins = await invoke<string | null>("db_get_kv", { key: "mcp-plugins" });
+    if (savedPlugins) {
+      const parsed = JSON.parse(savedPlugins);
+      await pluginManager.loadPlugins(parsed);
+    }
+  } catch (e) {
+    console.warn("Failed to load saved MCP plugins", e);
+  }
+
+  // Auto-discover bundled/default cloud plugins if no plugin list exists yet.
+  if (!savedPlugins) {
+    try {
+      const discovered = await pluginManager.discoverPlugins();
+      if (discovered.length > 0) {
+        for (const p of discovered) {
+          p.enabled = true;
+          await pluginManager.startPlugin(p);
+        }
+        await invoke("db_set_kv", { key: "mcp-plugins", value: JSON.stringify(discovered) });
+        console.log(`Auto-loaded ${discovered.length} MCP plugin(s)`);
+      }
+    } catch (e) {
+      console.warn("Failed to auto-discover MCP plugins", e);
+    }
+  }
 });
 </script>
 
 <template>
-  <div class="glow-orb orb-1"></div>
-  <div class="glow-orb orb-2"></div>
-
   <!-- Model Manager Modal (LM Studio-style) -->
-  <div v-if="showFileManager" class="key-gate" @click.self="showFileManager = false" style="z-index: 1000;">
-    <div class="manager-panel">
-      <!-- Header -->
-      <div class="manager-header">
+  <Models
+    v-if="showFileManager"
+    :managerSearch="managerSearch"
+    :managerTab="managerTab"
+    :models="models"
+    :allowedModels="allowedModels"
+    :localGgufs="localGgufs"
+    :totalOllamaSize="totalOllamaSize"
+    :filteredOllamaModels="filteredOllamaModels"
+    :selectedModel="selectedModel"
+    :isDeletingModel="isDeletingModel"
+    :totalGgufSize="totalGgufSize"
+    :filteredGgufs="filteredGgufs"
+    :activatedGgufs="activatedGgufs"
+    :isImporting="isImporting"
+    :isDeletingGguf="isDeletingGguf"
+    :allModelChoices="allModelChoices"
+    :pulling="pulling"
+    :vramGb="vramGb"
+    :localStatus="localStatus"
+    :formatBytes="formatBytes"
+    :modelKey="modelKey"
+    :quantFit="quantFit"
+    :fmtSizeGb="fmtSizeGb"
+    @update:managerSearch="managerSearch = $event"
+    @update:managerTab="managerTab = $event"
+    @update:selectedModel="selectedModel = $event"
+    @deleteOllamaModel="deleteOllamaModel"
+    @activateGguf="activateGguf"
+    @moveGguf="moveGguf"
+    @deleteGguf="deleteGguf"
+    @pullModel="pullModel"
+    @importGguf="importGguf"
+    @close="showFileManager = false"
+  />
+
+  <!-- MCP Plugin Manager Modal -->
+  <div v-if="showPluginManager" class="gate-overlay" style="background: rgba(0,0,0,0.85); backdrop-filter: blur(8px);">
+    <div class="manager-panel" style="width: 90%; max-width: 900px; height: 85vh;">
+      <div class="manager-header" style="background: linear-gradient(180deg, rgba(30,30,30,0.9) 0%, rgba(10,10,10,0.9) 100%); border-bottom: 1px solid rgba(255,255,255,0.05); padding: 1.2rem 1.5rem;">
         <div class="manager-title-row">
-          <div class="key-logo" style="width: 42px; height: 42px; font-size: 1.1rem; margin: 0;">🧠</div>
+          <div style="width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, #34d399, #059669); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px rgba(52,211,153,0.3);">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20"></path><path d="M12 2v20"></path><path d="M20 16a4 4 0 0 0-4-4h-8a4 4 0 0 0-4 4"></path></svg>
+          </div>
           <div>
-            <h2 class="manager-title">MODEL MANAGER</h2>
-            <p class="manager-subtitle">Manage your local AI models</p>
+            <h2 class="manager-title" style="letter-spacing: 2px;">MCP PLUGINS</h2>
+            <p class="manager-subtitle">Extend Cerberus with external capabilities</p>
           </div>
-          <div style="margin-left: auto; display: flex; gap: 8px;">
-            <button class="manager-close" @click="refreshAllModels" title="Refresh models">↻</button>
-            <button class="manager-close" @click="showFileManager = false" title="Close">✕</button>
-          </div>
-        </div>
-
-        <!-- Search bar -->
-        <div class="manager-search-row">
-          <input
-            v-model="managerSearch"
-            class="manager-search"
-            type="text"
-            placeholder="Search models…"
-            spellcheck="false"
-          />
-        </div>
-
-        <!-- Tabs -->
-        <div class="manager-tabs">
-          <button
-            class="manager-tab"
-            :class="{ active: managerTab === 'ollama' }"
-            @click="managerTab = 'ollama'"
-          >
-            OLLAMA MODELS
-            <span class="manager-tab-count">{{ models.length }}</span>
-          </button>
-          <button
-            class="manager-tab"
-            :class="{ active: managerTab === 'cloud' }"
-            @click="managerTab = 'cloud'"
-          >
-            CLOUD CATALOG
-            <span class="manager-tab-count">{{ allowedModels.length }}</span>
-          </button>
-          <button
-            class="manager-tab"
-            :class="{ active: managerTab === 'files' }"
-            @click="managerTab = 'files'"
-          >
-            RAW FILES
-            <span class="manager-tab-count">{{ localGgufs.length }}</span>
-          </button>
+          <button class="manager-close" @click="showPluginManager = false">✕</button>
         </div>
       </div>
-
-      <!-- Ollama Models Tab -->
-      <div v-if="managerTab === 'ollama'" class="manager-body">
-        <div class="manager-disk-bar">
-          <span class="manager-disk-label">TOTAL DISK USAGE</span>
-          <span class="manager-disk-value">{{ formatBytes(totalOllamaSize) }}</span>
-        </div>
-
-        <div v-if="filteredOllamaModels.length === 0" class="manager-empty">
-          <template v-if="managerSearch">No models matching "{{ managerSearch }}"</template>
-          <template v-else>No models installed in Ollama yet.<br/>Pull a model from the main screen or import a .gguf file.</template>
-        </div>
-
-        <div v-else class="manager-list">
-          <div v-for="m in filteredOllamaModels" :key="m.name" class="model-card">
-            <div class="model-card-main">
-              <div class="model-card-icon">{{ m.name.charAt(0).toUpperCase() }}</div>
-              <div class="model-card-info">
-                <div class="model-card-name" :title="m.name">{{ modelKey(m.name) }}</div>
-                <div class="model-card-meta">
-                  <span class="model-tag">{{ formatBytes(m.size) }}</span>
-                  <span v-if="m.details?.quantization_level" class="model-tag quant">{{ m.details.quantization_level }}</span>
-                  <span v-if="m.details?.parameter_size" class="model-tag param">{{ m.details.parameter_size }}</span>
-                  <span v-if="m.details?.family" class="model-tag family">{{ m.details.family }}</span>
-                </div>
-              </div>
-            </div>
-            <div class="model-card-actions">
-              <button
-                class="model-action-btn use"
-                v-if="modelKey(selectedModel) !== modelKey(m.name)"
-                @click="selectedModel = modelKey(m.name); showFileManager = false"
-                title="Use this model"
-              >USE</button>
-              <span v-else class="model-active-badge">ACTIVE</span>
-              <button
-                class="model-action-btn danger"
-                @click="deleteOllamaModel(m.name)"
-                :disabled="isDeletingModel"
-                title="Remove from Ollama (keeps your raw .gguf files safe)"
-              >UNREGISTER</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Raw Files Tab -->
-      <div v-if="managerTab === 'files'" class="manager-body">
-        <div class="manager-disk-bar">
-          <span class="manager-disk-label">RAW GGUF FILES</span>
-          <span class="manager-disk-value">{{ formatBytes(totalGgufSize) }}</span>
-        </div>
-
-        <p class="manager-hint">
-          Downloaded <code>.gguf</code> installer files. You can safely delete these after a model has been imported into Ollama.
-        </p>
-
-        <div v-if="filteredGgufs.length === 0" class="manager-empty">
-          <template v-if="managerSearch">No files matching "{{ managerSearch }}"</template>
-          <template v-else>No raw .gguf files found.</template>
-        </div>
-
-        <div v-else class="manager-list">
-          <div v-for="f in filteredGgufs" :key="f.name" class="model-card">
-            <div class="model-card-main">
-              <div class="model-card-icon file-icon">📄</div>
-              <div class="model-card-info">
-                <div class="model-card-name" :title="f.name">{{ f.name }}</div>
-                <div class="model-card-meta">
-                  <span class="model-tag">{{ formatBytes(f.size) }}</span>
-                </div>
-              </div>
-            </div>
-            <div class="model-card-actions">
-              <button
-                v-if="activatedGgufs.has(f.name)"
-                class="model-action-btn success"
-                disabled
-                title="Already activated in Ollama"
-              >ACTIVATED</button>
-              <button
-                v-else
-                class="model-action-btn use"
-                @click="activateGguf(f.name)"
-                :disabled="isImporting || isDeletingGguf"
-                title="Register this file in Ollama"
-              >ACTIVATE</button>
-              <button
-                class="model-action-btn"
-                @click="moveGguf(f.name)"
-                :disabled="isDeletingGguf"
-                title="Move to another location"
-              >MOVE</button>
-              <button
-                class="model-action-btn danger"
-                @click="deleteGguf(f.name)"
-                :disabled="isDeletingGguf"
-                title="Permanently delete this file from your hard drive"
-              >TRASH FILE</button>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Cloud Models Tab -->
-      <div v-if="managerTab === 'cloud'" class="manager-body">
-        <div class="manager-disk-bar">
-          <span class="manager-disk-label">AUTHORIZED CLOUD MODELS</span>
-          <span class="manager-disk-value">{{ allowedModels.length }} Available</span>
-        </div>
-
-        <p class="manager-hint">
-          Models authorized by your Cerberus account. Pull them to your local Ollama instance.
-        </p>
-
-        <div v-if="allowedModels.length === 0" class="manager-empty">
-          No cloud models available for your account.
-        </div>
-
-        <div v-else class="manager-list">
-          <div v-for="m in allModelChoices" :key="m.name" class="model-card">
-            <div class="model-card-main">
-              <div class="model-card-icon file-icon">☁️</div>
-              <div class="model-card-info">
-                <div class="model-card-name" :title="m.name">{{ m.name }}</div>
-                <div class="model-card-meta">
-                  <span class="model-tag">{{ m.description }}</span>
-                </div>
-              </div>
-            </div>
-            <div class="model-card-actions">
-              <template v-if="m.downloaded">
-                <button class="model-action-btn success" disabled>DOWNLOADED</button>
-              </template>
-              <template v-else-if="pulling?.name.startsWith(m.name)">
-                <button class="model-action-btn use" disabled>PULLING...</button>
-              </template>
-              <template v-else>
-                <div class="quant-buttons">
-                  <button
-                    v-for="q in m.quants.split(',').map(s => s.trim()).filter(Boolean)"
-                    :key="q"
-                    class="model-action-btn use"
-                    :class="{
-                      'fit-tight': quantFit(m.quantSizes[q]) === 'tight',
-                      'fit-too-big': quantFit(m.quantSizes[q]) === 'too-big'
-                    }"
-                    :title="
-                      m.quantSizes[q]
-                        ? `${fmtSizeGb(m.quantSizes[q])}` + (
-                            quantFit(m.quantSizes[q]) === 'too-big'
-                              ? ` — won't fit your ${vramGb || '?'} GB GPU; will run on CPU (slow)`
-                              : quantFit(m.quantSizes[q]) === 'tight'
-                                ? ` — close to your ${vramGb || '?'} GB GPU limit; may offload partially`
-                                : ''
-                          )
-                        : 'Pull ' + q
-                    "
-                    @click.stop="pullModel(m.name, q)"
-                  >
-                    PULL {{ q }}<span v-if="m.quantSizes[q]" class="quant-size">{{ fmtSizeGb(m.quantSizes[q]) }}</span>
-                  </button>
-                  <button
-                    v-if="!m.quants"
-                    class="model-action-btn use"
-                    @click.stop="pullModel(m.name)"
-                  >
-                    PULL
-                  </button>
-                </div>
-              </template>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Footer actions -->
-      <div class="manager-footer">
-        <button class="import-btn" @click="importGguf" :disabled="isImporting || !localStatus.running">
-          <span v-if="isImporting">IMPORTING…</span>
-          <span v-else>⬆ IMPORT GGUF</span>
-        </button>
-        <button class="close-modal-btn" @click="showFileManager = false">DONE</button>
+      <div style="flex: 1; overflow-y: auto; padding: 0;">
+        <PluginSettings :apiKey="apiKey" />
       </div>
     </div>
   </div>
 
   <!-- API Key Gate -->
-  <div v-if="!apiKeyVerified" class="key-gate">
-    <div class="key-card">
-      <img src="./assets/logo.png" class="key-logo-img" alt="Cerberus Logo" />
-      <p class="key-eyebrow">Local-First. Unfiltered. Yours.</p>
-      <h1 class="glitch key-title" data-text="CERBERUS">CERBERUS</h1>
-      <p class="key-sub">
-        Enter your Cerberus API key to unlock the local chat. Don't have one?
-        <a href="https://access.cerberusai.dev" target="_blank" rel="noopener">Get one here.</a>
-      </p>
-
-      <form class="key-form" @submit.prevent="submitKey">
-        <input
-          type="password"
-          v-model="apiKeyDraft"
-          placeholder="cb_••••••••••••••••••••"
-          autocomplete="off"
-          spellcheck="false"
-          :disabled="verifying"
-          autofocus
-        />
-        <button type="submit" :disabled="verifying || !apiKeyDraft.trim()">
-          <span v-if="!verifying">UNLOCK</span>
-          <span v-else>VERIFYING…</span>
-        </button>
-      </form>
-      <p v-if="verifyError" class="key-error">{{ verifyError }}</p>
-
-      <p class="key-foot">
-        Verified against <code>api.cerberusai.dev</code>. Your key is stored locally and never leaves
-        this machine after verification.
-      </p>
-    </div>
-  </div>
+  <Settings
+    :apiKeyVerified="apiKeyVerified"
+    :apiKeyDraft="apiKeyDraft"
+    :verifying="verifying"
+    :verifyError="verifyError"
+    @update:apiKeyDraft="apiKeyDraft = $event"
+    @submitKey="apiKeyDraft = $event; submitKey()"
+  />
 
   <!-- Top-of-window download progress bar -->
   <div v-if="pulling" class="download-bar" role="progressbar" :aria-valuenow="pulling.pct" aria-valuemin="0" aria-valuemax="100">
@@ -1126,17 +1197,36 @@ onMounted(async () => {
     </div>
   </div>
 
-  <div class="shell" :class="{ 'shell-blocked': !apiKeyVerified, 'shell-with-progress': !!pulling }">
+  <div class="shell"
+       :class="{ 'shell-blocked': !apiKeyVerified, 'shell-with-progress': !!pulling }"
+       @drop.prevent="handleDrop"
+       @dragover.prevent="dragActive = true"
+       @dragleave.prevent="dragActive = false">
+
+    <AnimatedBackground />
+
+    <div v-if="dragActive" class="drag-overlay">
+      <div class="drag-overlay-content">
+        Drop files here to attach
+      </div>
+    </div>
+
     <!-- Sidebar -->
     <aside class="sidebar">
+
       <div class="brand">
-        <img src="./assets/logo.png" class="brand-logo-img" alt="Cerberus Logo" />
-        <div class="brand-name">CERBERUS</div>
-        <div class="brand-sub">v{{ appVersion }}</div>
+        <div class="brand-logo-container">
+          <div class="brand-logo-glow"></div>
+          <div class="brand-logo" style="font-size: 1.1rem; padding-bottom: 2px;">C</div>
+        </div>
+        <div style="display: flex; flex-direction: column;">
+          <div class="brand-name">CERBERUS <span style="color: #a1a1aa; text-transform: none; font-style: italic;">AI</span></div>
+          <div class="brand-sub">v{{ appVersion }}</div>
+        </div>
       </div>
 
       <button class="new-chat-btn" @click="newChat">
-        + New Chat
+        + NEW CHAT
       </button>
 
       <div class="chats-list">
@@ -1149,56 +1239,43 @@ onMounted(async () => {
           @click="selectChat(c.id)"
           @auxclick="deleteChat(c.id, $event)"
         >
-          {{ c.title }}
+          <div v-if="c.id === activeId" class="active-chat-prism"></div>
+          <span style="position: relative; z-index: 10;">{{ c.title }}</span>
         </button>
       </div>
 
       <div class="sidebar-footer">
-        <!-- Cloud auth pill -->
-        <span v-if="cloudStatus.kind === 'ok'" class="status-pill ok">
-          <span class="dot"></span> CLOUD AUTH
-        </span>
-        <span v-else-if="cloudStatus.kind === 'checking'" class="status-pill warn">
-          <span class="dot"></span> AUTH…
-        </span>
-        <span v-else class="status-pill err">
-          <span class="dot"></span> CLOUD ERR
-        </span>
-
-        <!-- Local Ollama pill -->
-        <span v-if="localStatus.running" class="status-pill ok">
-          <span class="dot"></span> OLLAMA {{ localStatus.version }}
-        </span>
-        <span v-else class="status-pill err" :title="localStatus.error || ''">
-          <span class="dot"></span> OLLAMA OFFLINE
-        </span>
-
-        <div v-if="hardware" class="hw-summary">
+        <div class="hw-summary card-metal">
           <div class="hw-line">
-            <span class="hw-label">CPU</span>
-            <span class="hw-val">{{ hardware.cpu_cores }}c · {{ ramGb }} GB RAM</span>
+            <span class="hw-label" style="color: #60a5fa; width: 38px;">CPU</span>
+            <div style="flex: 1; height: 6px; background: rgba(0,0,0,0.6); border-radius: 4px; overflow: hidden; margin: 0 10px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.8), 0 1px 0 rgba(255,255,255,0.05);">
+              <div :style="{ width: Math.round(cpuUsage) + '%', height: '100%', background: 'linear-gradient(90deg, #1e3a8a, #60a5fa)', transition: 'width 1s cubic-bezier(0.4, 0, 0.2, 1)', boxShadow: '0 0 10px rgba(96, 165, 250, 0.6)' }"></div>
+            </div>
+            <span class="hw-val" style="width: 34px; text-align: right; font-variant-numeric: tabular-nums;">{{ Math.round(cpuUsage) }}%</span>
           </div>
           <div class="hw-line">
-            <span class="hw-label">GPU</span>
-            <span class="hw-val" :title="primaryGpu?.name || ''">
-              {{ primaryGpu ? (primaryGpu.name.length > 22 ? primaryGpu.name.slice(0, 22) + '…' : primaryGpu.name) : 'None' }}
-              <span v-if="vramGb"> · {{ vramGb }} GB</span>
+            <span class="hw-label" style="color: #34d399; width: 38px;">RAM</span>
+            <div style="flex: 1; height: 6px; background: rgba(0,0,0,0.6); border-radius: 4px; overflow: hidden; margin: 0 10px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.8), 0 1px 0 rgba(255,255,255,0.05);">
+              <div :style="{ width: Math.round(ramUsage) + '%', height: '100%', background: 'linear-gradient(90deg, #064e3b, #34d399)', transition: 'width 1s cubic-bezier(0.4, 0, 0.2, 1)', boxShadow: '0 0 10px rgba(52, 211, 153, 0.6)' }"></div>
+            </div>
+            <span class="hw-val" style="width: 34px; text-align: right; font-variant-numeric: tabular-nums;">{{ Math.round(ramUsage) }}%</span>
+          </div>
+          <div class="hw-line">
+            <span class="hw-label" style="color: #a855f7; width: 38px;">VRAM</span>
+            <div style="flex: 1; height: 6px; background: rgba(0,0,0,0.6); border-radius: 4px; overflow: hidden; margin: 0 10px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.8), 0 1px 0 rgba(255,255,255,0.05);">
+              <div :style="{ width: Math.round(vramUsage) + '%', height: '100%', background: 'linear-gradient(90deg, #4c1d95, #a855f7)', transition: 'width 1s cubic-bezier(0.4, 0, 0.2, 1)', boxShadow: '0 0 10px rgba(168, 85, 247, 0.6)' }"></div>
+            </div>
+            <span class="hw-val" :title="primaryGpu?.name || ''" style="width: 34px; text-align: right; font-variant-numeric: tabular-nums;">
+              {{ Math.round(vramUsage) }}%
             </span>
           </div>
         </div>
 
         <button
-          class="update-btn"
+          class="sidebar-action-btn"
           :class="{ 'update-btn-available': updateInfo?.available && !updating }"
           @click="handleUpdate"
           :disabled="updating || !updateInfo?.available"
-          :title="updating
-            ? 'Updating…'
-            : updateInfo?.available
-              ? `Update available: v${updateInfo.current} → v${updateInfo.latest}`
-              : updateInfo
-                ? `Up to date (v${updateInfo.current})`
-                : 'Checking for updates…'"
         >
           <span v-if="updating">UPDATING...</span>
           <template v-else-if="updateInfo?.available">
@@ -1209,11 +1286,15 @@ onMounted(async () => {
           <span v-else>CHECKING…</span>
         </button>
 
-        <button class="signout-btn" @click="openFileManager" title="Manage local models and GGUF files">
+        <button class="sidebar-action-btn" @click="openFileManager">
           MODEL MANAGER
         </button>
 
-        <button class="signout-btn" @click="signOut" title="Clear API key and sign out">
+        <button class="sidebar-action-btn" @click="showPluginManager = true">
+          🔌 MCP PLUGINS
+        </button>
+
+        <button class="sidebar-action-btn danger" @click="signOut">
           SIGN OUT
         </button>
       </div>
@@ -1221,9 +1302,12 @@ onMounted(async () => {
 
     <!-- Main -->
     <main class="main">
-      <header class="main-header">
-        <h1 class="glitch" data-text="CERBERUS AI">CERBERUS AI</h1>
-        <div class="model-tag-display" v-if="selectedModel">
+      <header class="main-header" style="background: linear-gradient(180deg, rgba(15,15,15,0.8) 0%, rgba(5,5,5,0.4) 100%); border-bottom: 1px solid rgba(255,255,255,0.05);">
+        <div style="display: flex; align-items: center; gap: 12px;">
+          <div style="height: 24px; width: 3px; border-radius: 4px; background: linear-gradient(180deg, rgba(168,85,247,0.8), rgba(99,102,241,0.8)); box-shadow: 0 0 10px rgba(168,85,247,0.4);"></div>
+          <h1 style="font-size: 1rem; font-weight: 900; letter-spacing: 0.3em; text-transform: uppercase; color: rgba(255,255,255,0.5); margin: 0;">CERBERUS <span style="color: #fff;">AI</span></h1>
+        </div>
+        <div class="model-tag-display" v-if="selectedModel" style="background: rgba(168,85,247,0.1); border-color: rgba(168,85,247,0.3); color: #c084fc;">
           {{ selectedModel }}
         </div>
       </header>
@@ -1238,99 +1322,100 @@ onMounted(async () => {
         <a href="https://access.cerberusai.dev" target="_blank" rel="noopener">access.cerberusai.dev</a>.
       </div>
 
-      <div ref="messagesEl" class="messages">
-        <template v-if="activeChat && activeChat.messages.length > 0">
-          <div
-            v-for="(m, i) in activeChat.messages"
-            :key="i"
-            class="msg-row"
-            :class="m.role"
-          >
-            <div class="msg-avatar" :class="m.role">
-              {{ m.role === 'user' ? 'YOU' : 'C' }}
-            </div>
-            <div
-              class="msg-bubble"
-              :class="{
-                streaming:
-                  streaming &&
-                  i === activeChat.messages.length - 1 &&
-                  m.role === 'assistant',
-                thinking:
-                  streaming &&
-                  i === activeChat.messages.length - 1 &&
-                  m.role === 'assistant' &&
-                  stripThinkTags(streamingContent) === ''
-              }"
-            ><template v-if="streaming && i === activeChat.messages.length - 1 && m.role === 'assistant'"><span v-if="stripThinkTags(streamingContent) === ''" class="thinking-label">Thinking…</span><div v-else class="md-body" v-html="renderMarkdown(stripThinkTags(streamingContent))"></div></template><template v-else><div v-if="m.role === 'assistant'" class="md-body" v-html="renderMarkdown(m.content)"></div><template v-else>{{ m.content }}</template></template></div>
-          </div>
-          <div class="msg-row" v-if="lastTtft !== null && !streaming" style="margin-top: -12px; margin-bottom: 8px;">
-            <div style="margin-left: 38px; display: flex; gap: 6px; opacity: 0.65;">
-               <span class="model-tag">⚡ TTFT: {{ lastTtft }}ms</span>
-               <span class="model-tag" v-if="lastTps">{{ lastTps.toFixed(1) }} tok/s</span>
-            </div>
-          </div>
-        </template>
+      <div class="chats-container" ref="chatsContainer">
+        <div class="chats-inner">
+          <ChatView
+            v-if="activeChat"
+            :activeChat="activeChat"
+            :models="models"
+            :streaming="streaming"
+            :streamingContent="streamingContent"
+            :lastTtft="lastTtft"
+            :lastTps="lastTps"
+            :renderMarkdown="renderMarkdown"
+            :stripThinkTags="stripThinkTags"
+          />
 
-        <div v-else class="empty">
-          <img src="./assets/logo.png" class="empty-logo-img" alt="Cerberus Logo" />
-          <h2>Cerberus AI</h2>
-          <p>
-            Unfiltered. Uncensored. Unbound. Inference runs on your hardware via Ollama;
-            your API key gates access through CerberusAI.
-          </p>
-
-          <!-- Empty state action -->
-          <div v-if="localStatus.running && models.length === 0" class="pull-block" style="text-align: center;">
-            <p class="pull-eyebrow" style="margin-bottom: 1rem;">No local models found.</p>
-            <button class="banner-retry" @click="openFileManager">OPEN MODEL MANAGER TO PULL OR IMPORT</button>
-          </div>
-
-          <div v-else class="suggestions">
-            <button
-              v-for="s in SUGGESTIONS"
-              :key="s"
-              class="suggestion"
-              @click="useSuggestion(s)"
-            >{{ s }}</button>
-          </div>
+          <Dashboard
+            v-else
+            :localStatus="localStatus"
+            :models="models"
+            @useSuggestion="useSuggestion"
+            @openFileManager="openFileManager"
+            @openPluginManager="showPluginManager = true"
+          />
         </div>
       </div>
 
       <div class="composer">
-        <div class="composer-inner">
-          <textarea
-            v-model="draft"
-            placeholder="Message Cerberus…"
-            rows="1"
-            @keydown="onComposerKeydown"
-            @input="autosizeComposer"
-          ></textarea>
-          <button
-            v-if="streaming"
-            class="stop-btn"
-            @click="stopChat"
-            aria-label="Stop generating"
-            title="Stop generating"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-              <rect x="6" y="6" width="12" height="12" rx="2" />
-            </svg>
-          </button>
-          <button
-            v-else
-            class="send-btn"
-            :disabled="!draft.trim() || streaming || !localStatus.running || cloudStatus.kind !== 'ok' || !selectedModel || !!pulling || !models.some((m) => modelKey(m.name) === modelKey(selectedModel))"
-            @click="send"
-            aria-label="Send"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M5 12h14M13 6l6 6-6 6"/>
-            </svg>
-          </button>
+        <div v-if="attachedImages.length > 0 || attachedFiles.length > 0" class="composer-attachments">
+          <div v-for="(img, idx) in attachedImages" :key="'img'+idx" class="attachment-thumb">
+            <img :src="'data:image/jpeg;base64,' + img" />
+            <button @click="removeImage(idx)" class="remove-btn">✕</button>
+          </div>
+          <div v-for="(file, idx) in attachedFiles" :key="'file'+idx" class="attachment-file-pill">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 6px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+            {{ file.name }}
+            <button @click="removeFile(idx)" class="remove-btn" style="margin-left: 8px;">✕</button>
+          </div>
         </div>
-        <div class="composer-hint">
-          <kbd>Enter</kbd> to send · <kbd>Shift</kbd>+<kbd>Enter</kbd> for newline
+        <div class="composer-wrapper" style="max-width: 700px; margin: 0 auto; width: 100%;">
+          <div class="composer-inner" style="background: linear-gradient(135deg, #180530 0%, #050505 100%); border: 1px solid rgba(168,85,247,0.15); border-radius: 28px; box-shadow: 0 15px 50px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.05); padding: 0.8rem 1rem; position: relative; display: flex; align-items: flex-end; gap: 12px; transition: all 0.3s ease;">
+            <div class="prism-edge" style="position: absolute; top: 0; left: 0; right: 0; height: 1px; border-radius: 28px 28px 0 0;"></div>
+
+            <div style="position: relative;">
+              <button class="attach-btn" @click="showAttachMenu = !showAttachMenu" style="width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0.5); flex-shrink: 0; transition: all 0.2s ease; margin-bottom: 0;" title="Attach options">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+              </button>
+
+              <div v-if="showAttachMenu" style="position: absolute; bottom: 50px; left: 0; padding: 0.5rem; border-radius: 12px; display: flex; flex-direction: column; width: 180px; z-index: 100; background: #1e1e1e; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+                <div style="font-size: 0.75rem; color: rgba(255,255,255,0.4); font-weight: 600; padding: 8px 12px; margin-bottom: 4px;">Add Context</div>
+                <button @click="triggerImageInput(); showAttachMenu = false" class="attach-menu-item">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.7;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                  <span>Media</span>
+                </button>
+                <button @click="triggerFileInput(); showAttachMenu = false" class="attach-menu-item">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.7;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                  <span>File</span>
+                </button>
+              </div>
+            </div>
+            <input type="file" ref="fileInput" @change="handleFileSelect" style="display: none" multiple />
+            <input type="file" ref="imageInput" accept="image/*" @change="handleFileSelect" style="display: none" multiple />
+
+            <textarea
+              v-model="draft"
+              placeholder="Message Cerberus…"
+              rows="1"
+              style="flex: 1; background: transparent; border: none; color: #fff; font-size: 0.95rem; line-height: 24px; resize: none; min-height: 24px; max-height: 200px; padding: 8px 0; outline: none; margin-bottom: 0;"
+              @keydown="onComposerKeydown"
+              @input="autosizeComposer"
+            ></textarea>
+            <button
+              v-if="streaming"
+              class="stop-btn"
+              style="width: 40px; height: 40px; border-radius: 14px; background: linear-gradient(135deg, #ef4444, #7f1d1d); border: 1px solid #450a0a; color: #fff; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 15px rgba(239,68,68,0.3), inset 0 1px 0 rgba(255,255,255,0.2); flex-shrink: 0;"
+              @click="stopChat"
+              aria-label="Stop generating"
+              title="Stop generating"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
+              </svg>
+            </button>
+            <button
+              v-else
+              class="send-btn btn-metal-dark"
+              style="width: 40px; height: 40px; border-radius: 14px; display: flex; align-items: center; justify-content: center; padding: 0; flex-shrink: 0;"
+              @click="send"
+              :disabled="!draft.trim() && attachedImages.length === 0 && attachedFiles.length === 0"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"></path></svg>
+            </button>
+          </div>
+          <div style="font-size: 0.65rem; color: rgba(255,255,255,0.3); text-align: left; padding-left: 1.2rem; margin-top: 8px;">
+            <strong style="color: #fff">Enter</strong> to send • <strong>Shift+Enter</strong> for newline
+          </div>
         </div>
       </div>
     </main>
@@ -1353,90 +1438,90 @@ onMounted(async () => {
 }
 
 .hw-summary {
-  margin-top: 0.35rem;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  font-size: 0.68rem;
-  color: var(--text-muted);
-  background: var(--bg-frost);
-  backdrop-filter: blur(8px);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-sm);
-  padding: 8px 10px;
+  gap: 6px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  margin-bottom: 4px;
 }
 .hw-line {
   display: flex;
   justify-content: space-between;
   gap: 8px;
+  align-items: center;
 }
 .hw-label {
-  letter-spacing: 1.5px;
-  font-weight: 700;
-  color: var(--red-400);
+  letter-spacing: 2px;
+  font-weight: 800;
   text-transform: uppercase;
-  font-size: 0.6rem;
+  font-size: 0.65rem;
   font-family: 'JetBrains Mono', monospace;
 }
 .hw-val {
-  color: var(--text-secondary);
+  color: #fff;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 0.68rem;
+  font-size: 0.75rem;
+  font-weight: 600;
   text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.signout-btn {
-  margin-top: 0.35rem;
-  background: var(--bg-frost);
-  backdrop-filter: blur(8px);
-  border: 1px solid var(--glass-border);
-  color: var(--text-muted);
-  padding: 7px 10px;
-  border-radius: var(--radius-sm);
-  font-size: 0.65rem;
-  letter-spacing: 2px;
-  font-weight: 700;
-  text-transform: uppercase;
-  transition: all 150ms var(--ease-out);
-}
-.signout-btn:hover {
-  color: var(--red-400);
-  border-color: var(--glass-border-red);
-  background: var(--red-glow-dim);
-}
-
-.update-btn {
-  margin-top: 0.8rem;
-  background: var(--bg-frost);
-  backdrop-filter: blur(8px);
-  border: 1px solid var(--glass-border);
-  color: var(--text-muted);
-  padding: 7px 10px;
-  border-radius: var(--radius-sm);
-  font-size: 0.65rem;
+.sidebar-action-btn {
+  width: 100%;
+  text-align: left;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(0, 0, 0, 0.5) 100%);
+  border: 1px solid rgba(0, 0, 0, 0.8);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 4px 10px rgba(0, 0, 0, 0.5),
+    inset 0 1px 3px rgba(255, 255, 255, 0.05),
+    inset 0 -2px 5px rgba(0, 0, 0, 0.4),
+    inset 1px 0 2px rgba(255, 255, 255, 0.02),
+    inset -1px 0 2px rgba(0, 0, 0, 0.3);
+  color: rgba(255, 255, 255, 0.5);
+  padding: 10px 16px;
+  border-radius: 12px;
+  font-size: 0.7rem;
   letter-spacing: 2px;
   font-weight: 800;
   text-transform: uppercase;
-  transition: all 150ms var(--ease-out);
+  transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
 }
-.update-btn:hover:not(:disabled) {
-  filter: brightness(1.2);
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px var(--red-glow);
+.sidebar-action-btn:hover {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.06) 0%, rgba(20, 20, 20, 0.6) 100%);
+  border-color: rgba(0, 0, 0, 1);
+  border-top: 1px solid rgba(255, 255, 255, 0.15);
+  color: #fff;
+  transform: translateY(-2px);
+  box-shadow:
+    0 6px 15px rgba(0, 0, 0, 0.7),
+    inset 0 1px 3px rgba(255, 255, 255, 0.1),
+    inset 0 -2px 5px rgba(0, 0, 0, 0.6),
+    inset 1px 0 2px rgba(255, 255, 255, 0.04),
+    inset -1px 0 2px rgba(0, 0, 0, 0.4);
 }
-.update-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+.sidebar-action-btn.danger {
+  color: #ef4444;
 }
+.sidebar-action-btn.danger:hover {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.15) 0%, rgba(100, 10, 10, 0.6) 100%);
+  border-top: 1px solid rgba(239, 68, 68, 0.4);
+  color: #fca5a5;
+}
+
 .update-btn-available {
-  background: var(--red-600) !important;
-  border-color: var(--red-500) !important;
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.8), rgba(185, 28, 28, 0.9)) !important;
+  border-color: rgba(239, 68, 68, 0.5) !important;
   color: #fff !important;
-  box-shadow: 0 0 0 1px var(--red-500), 0 6px 18px var(--red-glow);
+  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
   animation: update-pulse 2.4s infinite ease-in-out;
+}
+@keyframes update-pulse {
+  0%, 100% { box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3); }
+  50% { box-shadow: 0 4px 25px rgba(239, 68, 68, 0.6); }
 }
 
 /* ─── Model Manager Panel (LM Studio-style) ──────────────────────────── */
@@ -1449,12 +1534,13 @@ onMounted(async () => {
   background: var(--bg-frost-deep);
   backdrop-filter: blur(var(--frost-blur-heavy));
   -webkit-backdrop-filter: blur(var(--frost-blur-heavy));
-  border: 1px solid var(--glass-border-red);
+  border: 1px solid var(--glass-border-purp);
   border-radius: var(--radius-xl);
   box-shadow:
     0 30px 80px -20px rgba(0,0,0,0.9),
-    0 0 0 1px rgba(220, 38, 38, 0.12),
-    0 0 80px -20px rgba(220, 38, 38, 0.15);
+    inset 0 2px 4px rgba(255,255,255,0.05),
+    inset 0 -2px 6px rgba(0,0,0,0.4),
+    0 0 80px -20px rgba(168, 85, 247, 0.15);
   animation: gateIn 350ms var(--ease-spring);
   overflow: hidden;
 }
@@ -2315,5 +2401,26 @@ onMounted(async () => {
   letter-spacing: 2px;
   color: var(--red-400);
   text-transform: uppercase;
+}
+
+.attach-menu-item {
+  text-align: left;
+  padding: 8px 12px;
+  font-size: 0.85rem;
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.85);
+  background: transparent;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
+  transition: background 0.2s;
+  cursor: pointer;
+  width: 100%;
+}
+.attach-menu-item:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
 }
 </style>

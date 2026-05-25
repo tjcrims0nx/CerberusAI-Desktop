@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "cerberus-remote-skills": {
+      "url": "https://api.cerberusai.dev/skills-sse"
+    }
+  }
+}

@@ -1,8 +1,20 @@
-export type Role = "user" | "assistant" | "system";
+export type Role = "user" | "assistant" | "system" | "tool";
+
+export interface ToolCallFunction {
+  name: string;
+  arguments: any;
+}
+
+export interface ToolCallChunk {
+  id?: string;
+  function: ToolCallFunction;
+}
 
 export interface Message {
   role: Role;
   content: string;
+  images?: string[];
+  tool_calls?: ToolCallChunk[];
 }
 
 export interface Chat {
@@ -42,6 +54,7 @@ export interface ChatStreamChunk {
   error?: string;
   ttft_ms?: number;
   tps?: number;
+  tool_calls?: ToolCallChunk[];
 }
 
 export interface GpuInfo {

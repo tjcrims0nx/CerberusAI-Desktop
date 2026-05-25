@@ -1,0 +1,32 @@
+{
+  "name": "cerberus-skills",
+  "version": "1.0.0",
+  "description": "MCP skills server for CerberusAI-Desktop — exposes filesystem and shell tools to local Ollama models",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "cerberus-skills": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "start:http": "node dist/http.js",
+    "dev": "tsc --watch",
+    "clean": "rimraf dist"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "express": "^4.21.0",
+    "puppeteer": "^25.0.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
