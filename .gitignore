@@ -28,3 +28,14 @@ deploy/access-site/
 
 # User-supplied test files
 test_install.ps1
+
+# Local release/build leftovers
+release-out/
+build_output.txt
+skills-server.zip
+
+# Local server/deployment scratch
+tmp_*
+local_llm_config.txt
+nginx_llm.conf
+patch_v1.js

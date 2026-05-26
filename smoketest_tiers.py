@@ -3,8 +3,8 @@ import time
 from openai import OpenAI
 
 TIERS = {
-    "Premium": "cbs_live_C4L479axY27VAbGmNUNEcmWOqF8AaxgJ",
-    "Lite": "cbs_live_H6kHwMsALUhRUluoosskhw1c6vtPd2Bv"
+    "Premium": os.environ.get("CERBERUS_PREMIUM_API_KEY"),
+    "Lite": os.environ.get("CERBERUS_LITE_API_KEY"),
 }
 
 BASE_URL = "https://api.cerberusai.dev/v1"
@@ -66,6 +66,11 @@ def run_tier_test(tier_name, api_key):
     print("\n")
 
 if __name__ == "__main__":
+    missing = [name for name, api_key in TIERS.items() if not api_key]
+    if missing:
+        names = ", ".join(f"CERBERUS_{name.upper()}_API_KEY" for name in missing)
+        raise SystemExit(f"Set {names} before running this smoke test.")
+
     for tier_name, api_key in TIERS.items():
         run_tier_test(tier_name, api_key)
     print("ALL TESTS COMPLETE")

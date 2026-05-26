@@ -8,7 +8,10 @@ import json, time
 import sys, os
 sys.stdout.reconfigure(encoding='utf-8')
 
-API_KEY = os.environ.get("API_KEY", "cbs_live_C4L479axY27VAbGmNUNEcmWOqF8AaxgJ")
+API_KEY = os.environ.get("CERBERUS_API_KEY")
+if not API_KEY:
+    print("Set CERBERUS_API_KEY before running this smoke test.", file=sys.stderr)
+    sys.exit(1)
 BASE    = "https://api.cerberusai.dev/v1"
 
 client = OpenAI(base_url=BASE, api_key=API_KEY, timeout=60.0)

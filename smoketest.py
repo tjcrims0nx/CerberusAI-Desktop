@@ -1,8 +1,14 @@
 import os
+import sys
 from openai import OpenAI
 
+API_KEY = os.environ.get("CERBERUS_API_KEY")
+if not API_KEY:
+    print("Set CERBERUS_API_KEY before running this smoke test.", file=sys.stderr)
+    sys.exit(1)
+
 client = OpenAI(
-    api_key="cbs_live_C4L479axY27VAbGmNUNEcmWOqF8AaxgJ",
+    api_key=API_KEY,
     base_url="https://api.cerberusai.dev/v1"
 )
 
