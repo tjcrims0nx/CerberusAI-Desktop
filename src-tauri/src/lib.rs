@@ -90,14 +90,6 @@ async fn check_for_update() -> Result<model_manager::UpdateInfo, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Compare the bundled app version against the latest GitHub prerelease.
-#[tauri::command]
-async fn check_for_beta_update() -> Result<model_manager::UpdateInfo, String> {
-    model_manager::check_beta_update(env!("CARGO_PKG_VERSION"))
-        .await
-        .map_err(|e| e.to_string())
-}
-
 // ─── Local Ollama ─────────────────────────────────────────────────────────
 
 /// Returns local Ollama daemon status (running + version, or error).
@@ -268,30 +260,6 @@ async fn update_app(force: Option<bool>) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn update_beta_app(force: Option<bool>) -> Result<(), String> {
-    if !force.unwrap_or(false) {
-        let info = model_manager::check_beta_update(env!("CARGO_PKG_VERSION"))
-            .await
-            .map_err(|e| e.to_string())?;
-        if !info.available {
-            return Err(format!(
-                "no beta update available (installed v{}, latest beta v{})",
-                info.current, info.latest
-            ));
-        }
-    }
-    std::process::Command::new("powershell.exe")
-        .arg("-NoProfile")
-        .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-Command")
-        .arg("irm https://cerberusai.dev/get-beta | iex")
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
 fn db_set_kv(key: String, value: String, state: tauri::State<'_, secure_db::SecureDb>) -> Result<(), String> {
     state.set_kv(&key, &value).map_err(|e| e.to_string())
 }
@@ -371,7 +339,6 @@ pub fn run() {
             check_api,
             list_allowed_models,
             check_for_update,
-            check_for_beta_update,
             check_local_ollama,
             list_models,
             pull_model,
@@ -380,7 +347,6 @@ pub fn run() {
             cancel_chat,
             detect_hardware,
             update_app,
-            update_beta_app,
             list_local_ggufs,
             delete_local_gguf,
             move_local_gguf,

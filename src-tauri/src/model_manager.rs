@@ -89,8 +89,6 @@ pub async fn verify_key(api_key: &str) -> Result<String, anyhow::Error> {
 
 const RELEASES_LATEST_URL: &str =
     "https://api.github.com/repos/tjcrims0nx/CerberusAI-Desktop/releases/latest";
-const RELEASES_ALL_URL: &str =
-    "https://api.github.com/repos/tjcrims0nx/CerberusAI-Desktop/releases";
 
 #[derive(Debug, Deserialize)]
 struct GitHubReleaseResp {
@@ -131,36 +129,6 @@ pub async fn check_update(current: &str) -> Result<UpdateInfo, anyhow::Error> {
         latest,
         available,
     })
-}
-
-pub async fn check_beta_update(current: &str) -> Result<UpdateInfo, anyhow::Error> {
-    let c = http_short()?;
-    let r = c
-        .get(RELEASES_ALL_URL)
-        .header("User-Agent", "CerberusDesktop")
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await?;
-    if !r.status().is_success() {
-        return Err(anyhow::anyhow!("GitHub API returned {}", r.status()));
-    }
-    // GitHub returns an array of releases, ordered by date
-    let releases = r.json::<Vec<GitHubReleaseResp>>().await?;
-    if let Some(latest_release) = releases.into_iter().next() {
-        let latest = latest_release.tag_name.trim_start_matches(|c| c == 'v' || c == 'V').to_string();
-        let available = parse_semver(&latest) > parse_semver(current);
-        Ok(UpdateInfo {
-            current: current.to_string(),
-            latest,
-            available,
-        })
-    } else {
-        Ok(UpdateInfo {
-            current: current.to_string(),
-            latest: current.to_string(),
-            available: false,
-        })
-    }
 }
 
 // ─── Cloud: server-side model allowlist ────────────────────────────────────
