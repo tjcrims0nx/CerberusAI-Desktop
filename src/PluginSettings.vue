@@ -18,25 +18,39 @@
       </div>
 
       <div v-else class="plugin-list">
-        <div v-for="plugin in plugins" :key="plugin.id" class="plugin-card">
+        <div
+          v-for="plugin in plugins"
+          :key="plugin.id"
+          :class="['plugin-card', { 'awesome-plugin-card': isAwesomePlugin(plugin) }]"
+        >
           <div class="plugin-info">
             <div class="plugin-title-row">
               <h3>{{ plugin.name }}</h3>
+              <span v-if="isAwesomePlugin(plugin)" class="source-pill">Awesome-Skills</span>
+              <span v-if="plugin.verified" class="verify-pill ok">Verified</span>
+              <span v-else-if="plugin.verifyError" class="verify-pill error">Verify failed</span>
               <span :class="['status', isPluginActive(plugin.id) ? 'active' : 'inactive']">
                 {{ isPluginActive(plugin.id) ? 'Connected' : 'Offline' }}
               </span>
             </div>
             <p class="command">
               <code v-if="plugin.url">{{ plugin.url }}</code>
+              <code v-else-if="isAwesomePlugin(plugin)">{{ plugin.cwd || plugin.command }}</code>
               <code v-else>{{ plugin.command }} {{ plugin.args ? plugin.args.join(' ') : '' }}</code>
             </p>
+            <p v-if="plugin.verifyError" class="plugin-verify-error">{{ plugin.verifyError }}</p>
           </div>
 
           <div class="plugin-actions">
-            <button @click="togglePlugin(plugin)" :class="plugin.enabled ? 'btn-danger' : 'btn-success'">
-              {{ plugin.enabled ? 'Disable' : 'Enable' }}
+            <button
+              @click="togglePlugin(plugin)"
+              :class="['power-btn', plugin.enabled ? 'active' : 'inactive']"
+              :title="plugin.enabled ? 'Deactivate plugin' : 'Activate plugin'"
+            >
+              <span class="power-dot"></span>
+              {{ plugin.enabled ? 'Deactivate' : 'Activate' }}
             </button>
-            <button @click="removePlugin(plugin.id)" class="btn-secondary">Remove</button>
+            <button @click="removePlugin(plugin.id)" class="remove-btn" title="Remove plugin">Remove</button>
           </div>
         </div>
       </div>
@@ -73,33 +87,67 @@
         <div>
           <p class="plugin-eyebrow">Remote directory</p>
           <h3>Awesome-Skills Directory</h3>
-          <span>Fetched through Cerberus Cloud Skills. Installs auto-convert compatible MCP servers and plain SKILL.md repos for Cerberus.</span>
+          <span>Search awesome-skills.com, pull GitHub repos, and auto-convert plain SKILL.md repos for Cerberus.</span>
         </div>
-        <button class="btn-primary" @click="loadAwesomeSkills" :disabled="awesomeLoading">
-          {{ awesomeLoading ? 'Refreshing' : 'Refresh' }}
-        </button>
+        <div class="directory-actions">
+          <div class="search-box">
+            <input
+              v-model="awesomeQuery"
+              type="search"
+              placeholder="Search plugins"
+              autocomplete="off"
+              @focus="showSuggestions = true"
+              @keydown.enter.prevent="loadAwesomeSkills"
+            />
+            <div v-if="showSuggestions && relatedSkills.length > 0" class="suggestion-menu">
+              <button
+                v-for="skill in relatedSkills"
+                :key="skill.url"
+                type="button"
+                @mousedown.prevent="chooseRelatedSkill(skill)"
+              >
+                <span>{{ skill.name }}</span>
+                <small>{{ skill.url.replace('https://github.com/', '') }}</small>
+              </button>
+            </div>
+          </div>
+          <button class="btn-primary" @click="loadAwesomeSkills" :disabled="awesomeLoading">
+            {{ awesomeLoading ? 'Searching' : 'Search' }}
+          </button>
+        </div>
       </div>
 
       <div v-if="awesomeError" class="notice error">{{ awesomeError }}</div>
       <div v-else-if="awesomeLoading" class="notice">Loading available MCP skills...</div>
       <div v-else-if="awesomeSkills.length === 0" class="empty-panel">
         <strong>No skills returned.</strong>
-        <span>Check that your cloud skills MCP server is reachable and exposes <code>list_awesome_skills</code>.</span>
+        <span>Try a different search or refresh the full directory.</span>
       </div>
 
       <div v-else class="awesome-grid">
-        <article v-for="skill in awesomeSkills" :key="skill.url || skill.name" class="skill-card">
-          <div>
-            <h3>{{ skill.name }}</h3>
+        <article
+          v-for="skill in awesomeSkills"
+          :key="skill.url || skill.name"
+          :class="['skill-card', { installed: !!installedAwesomePlugin(skill) }]"
+        >
+          <div class="skill-main">
+            <div class="skill-title-row">
+              <h3>{{ skill.name }}</h3>
+              <span v-if="installedAwesomePlugin(skill)?.verified" class="installed-pill">Verified</span>
+              <span v-else-if="installedAwesomePlugin(skill)" class="installed-pill">Installed</span>
+            </div>
             <p>{{ skill.description || 'MCP skill from awesome-skills.com' }}</p>
           </div>
-          <code>{{ skill.url }}</code>
+          <code :title="skill.url">{{ skill.url.replace('https://github.com/', '') }}</code>
+          <p v-if="installMessages[skill.url]" :class="['install-message', installMessages[skill.url].kind]">
+            {{ installMessages[skill.url].text }}
+          </p>
           <button
-            class="btn-primary install-btn"
-            @click="installAwesomeSkill(skill)"
+            :class="['install-btn', installedAwesomePlugin(skill) ? 'installed-action' : 'btn-primary']"
+            @click="handleAwesomeSkillAction(skill)"
             :disabled="installingUrl === skill.url"
           >
-            {{ installingUrl === skill.url ? 'Converting' : 'Install' }}
+            {{ awesomeSkillButtonLabel(skill) }}
           </button>
         </article>
       </div>
@@ -108,7 +156,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue';
+import { computed, ref, onMounted, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { PluginManager, type PluginConfig } from './PluginManager';
 
@@ -122,6 +170,10 @@ const props = defineProps<{
   apiKey: string;
 }>();
 
+const emit = defineEmits<{
+  pluginsChanged: [plugins: PluginConfig[]];
+}>();
+
 const pluginManager = new PluginManager();
 pluginManager.setApiKey(props.apiKey);
 
@@ -131,7 +183,10 @@ const activeTab = ref<'local' | 'awesome'>('local');
 const awesomeSkills = ref<AwesomeSkill[]>([]);
 const awesomeLoading = ref(false);
 const awesomeError = ref('');
+const awesomeQuery = ref('');
+const showSuggestions = ref(false);
 const installingUrl = ref('');
+const installMessages = ref<Record<string, { kind: 'success' | 'error', text: string }>>({});
 
 const newPlugin = ref({
   name: '',
@@ -143,6 +198,25 @@ const mcpConfigPath = ref('C:/Users/tjcri/claude-code/.mcp.json');
 watch(() => props.apiKey, (key) => {
   pluginManager.setApiKey(key);
 });
+
+const relatedSkills = computed(() => {
+  const query = awesomeQuery.value.trim().toLowerCase();
+  if (!query || awesomeSkills.value.length === 0) return [];
+  return awesomeSkills.value
+    .map((skill) => ({ skill, score: relatedScore(skill, query) }))
+    .filter((item) => item.score < 999)
+    .sort((a, b) => a.score - b.score || a.skill.name.localeCompare(b.skill.name))
+    .slice(0, 6)
+    .map((item) => item.skill);
+});
+
+const awesomePluginId = (skill: AwesomeSkill) => {
+  const slug = skill.name
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '_')
+    .replace(/^_+|_+$/g, '') || 'plugin';
+  return `awesome_${slug}`;
+};
 
 onMounted(async () => {
   await loadSavedPlugins();
@@ -157,7 +231,6 @@ async function loadSavedPlugins() {
       plugins.value = await pluginManager.discoverPlugins();
       savePlugins();
     }
-    await pluginManager.loadPlugins(plugins.value);
     updateActivePlugins();
   } catch (e) {
     console.warn("Failed to load MCP plugins", e);
@@ -171,56 +244,14 @@ async function openAwesomeTab() {
   }
 }
 
-async function ensureCloudSkills() {
-  let cloud = plugins.value.find((p) => p.id === 'cerberus_cloud_skills');
-  if (!cloud) {
-    cloud = (await pluginManager.discoverPlugins())[0];
-    plugins.value.push(cloud);
-    savePlugins();
-  }
-  if (!pluginManager.activePlugins.includes(cloud.id)) {
-    await pluginManager.startPlugin(cloud);
-    updateActivePlugins();
-  }
-  return cloud;
-}
-
-function toolText(result: any): string {
-  if (!result?.content) return '';
-  return result.content
-    .map((part: any) => typeof part.text === 'string' ? part.text : '')
-    .filter(Boolean)
-    .join('\n');
-}
-
-function parseAwesomeSkills(text: string): AwesomeSkill[] {
-  const matches = [...text.matchAll(/-\s+\*\*(.*?)\*\*:\s*([\s\S]*?)\n\s*URL:\s*(\S+)/g)];
-  if (matches.length > 0) {
-    return matches.map((match) => ({
-      name: match[1].trim(),
-      description: match[2].trim(),
-      url: match[3].trim()
-    }));
-  }
-
-  return text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => /^https:\/\/github\.com\//i.test(line))
-    .map((url) => ({
-      name: url.split('/').filter(Boolean).slice(-1)[0] || url,
-      description: '',
-      url
-    }));
-}
-
 async function loadAwesomeSkills() {
   awesomeLoading.value = true;
   awesomeError.value = '';
+  showSuggestions.value = false;
   try {
-    const cloud = await ensureCloudSkills();
-    const result = await pluginManager.callTool(cloud.id, 'list_awesome_skills', {});
-    awesomeSkills.value = parseAwesomeSkills(toolText(result));
+    awesomeSkills.value = await invoke<AwesomeSkill[]>('search_awesome_skills', {
+      query: awesomeQuery.value.trim() || null
+    });
   } catch (e: any) {
     awesomeError.value = e?.message || 'Failed to load Awesome-Skills directory.';
   } finally {
@@ -228,17 +259,109 @@ async function loadAwesomeSkills() {
   }
 }
 
+function normalizeText(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function editDistance(a: string, b: string) {
+  const costs = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 0; i < a.length; i += 1) {
+    let last = i;
+    costs[0] = i + 1;
+    for (let j = 0; j < b.length; j += 1) {
+      const old = costs[j + 1];
+      costs[j + 1] = a[i] === b[j] ? last : Math.min(last, costs[j], costs[j + 1]) + 1;
+      last = old;
+    }
+  }
+  return costs[b.length] ?? 999;
+}
+
+function relatedScore(skill: AwesomeSkill, query: string) {
+  const normalizedQuery = normalizeText(query);
+  const haystack = normalizeText(`${skill.name} ${skill.description} ${skill.url}`);
+  if (haystack.includes(normalizedQuery)) return 0;
+
+  const tokens = haystack.split(/\s+/).filter(Boolean);
+  const queryTokens = normalizedQuery.split(/\s+/).filter(Boolean);
+  let score = 0;
+  for (const queryToken of queryTokens) {
+    const best = Math.min(
+      ...tokens.map((token) => token.startsWith(queryToken) || queryToken.startsWith(token)
+        ? 1
+        : editDistance(queryToken, token))
+    );
+    if (best > Math.max(1, Math.floor(queryToken.length / 3))) return 999;
+    score += best;
+  }
+  return score + 2;
+}
+
+function chooseRelatedSkill(skill: AwesomeSkill) {
+  awesomeQuery.value = skill.name;
+  awesomeSkills.value = [skill, ...awesomeSkills.value.filter((item) => item.url !== skill.url)];
+  showSuggestions.value = false;
+}
+
+function installedAwesomePlugin(skill: AwesomeSkill) {
+  const id = awesomePluginId(skill);
+  return plugins.value.find((plugin) => plugin.id === id);
+}
+
+function awesomeSkillButtonLabel(skill: AwesomeSkill) {
+  if (installingUrl.value === skill.url) return 'Converting';
+  const installed = installedAwesomePlugin(skill);
+  if (!installed) return 'Install';
+  return isPluginActive(installed.id) ? 'Installed' : 'Activate';
+}
+
+async function handleAwesomeSkillAction(skill: AwesomeSkill) {
+  const installed = installedAwesomePlugin(skill);
+  if (installed) {
+    if (!isPluginActive(installed.id)) {
+      await activateInstalledAwesomeSkill(installed, skill.url);
+    }
+    return;
+  }
+  await installAwesomeSkill(skill);
+}
+
+async function activateInstalledAwesomeSkill(plugin: PluginConfig, sourceUrl?: string) {
+  plugin.enabled = true;
+  savePlugins();
+  updateActivePlugins();
+  if (sourceUrl) {
+    installMessages.value[sourceUrl] = plugin.verified
+      ? { kind: 'success', text: 'Activated and ready.' }
+      : { kind: 'error', text: plugin.verifyError || `Installed, but verification failed for ${plugin.name}.` };
+  }
+}
+
 async function installAwesomeSkill(skill: AwesomeSkill) {
   installingUrl.value = skill.url;
   awesomeError.value = '';
+  delete installMessages.value[skill.url];
   try {
-    const cloud = await ensureCloudSkills();
-    await pluginManager.callTool(cloud.id, 'install_awesome_skill', {
+    const installed = await invoke<PluginConfig>('install_awesome_skill', {
       name: skill.name,
       url: skill.url
     });
+    const existingIndex = plugins.value.findIndex((plugin) => plugin.id === installed.id);
+    if (existingIndex >= 0) {
+      plugins.value[existingIndex] = installed;
+    } else {
+      plugins.value.push(installed);
+    }
+    savePlugins();
+    installMessages.value[skill.url] = installed.verified
+      ? { kind: 'success', text: 'Downloaded, converted, and verified.' }
+      : { kind: 'error', text: installed.verifyError || 'Downloaded, but verification did not pass.' };
+    await activateInstalledAwesomeSkill(installed, skill.url);
   } catch (e: any) {
-    awesomeError.value = e?.message || `Failed to install ${skill.name}.`;
+    installMessages.value[skill.url] = {
+      kind: 'error',
+      text: e?.message || `Failed to install ${skill.name}.`
+    };
   } finally {
     installingUrl.value = '';
   }
@@ -257,6 +380,7 @@ const loadFromConfig = async () => {
 
 const savePlugins = () => {
   invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(plugins.value) }).catch(console.error);
+  emit('pluginsChanged', plugins.value);
 };
 
 const updateActivePlugins = () => {
@@ -264,18 +388,17 @@ const updateActivePlugins = () => {
 };
 
 const isPluginActive = (id: string) => {
-  return activePlugins.value.includes(id);
+  const plugin = plugins.value.find((item) => item.id === id);
+  return !!plugin?.enabled || activePlugins.value.includes(id);
+};
+
+const isAwesomePlugin = (plugin: PluginConfig) => {
+  return plugin.id.startsWith('awesome_') || !!plugin.cwd?.includes('.CerberusAI');
 };
 
 const togglePlugin = async (plugin: PluginConfig) => {
   plugin.enabled = !plugin.enabled;
   savePlugins();
-
-  if (plugin.enabled) {
-    await pluginManager.startPlugin(plugin);
-  } else {
-    await pluginManager.stopPlugin(plugin.id);
-  }
   updateActivePlugins();
 };
 
@@ -293,8 +416,6 @@ const addPlugin = async () => {
 
   plugins.value.push(config);
   savePlugins();
-
-  await pluginManager.startPlugin(config);
   updateActivePlugins();
 
   newPlugin.value = { name: '', command: '' };
@@ -302,7 +423,6 @@ const addPlugin = async () => {
 };
 
 const removePlugin = async (id: string) => {
-  await pluginManager.stopPlugin(id);
   plugins.value = plugins.value.filter(p => p.id !== id);
   savePlugins();
   updateActivePlugins();
@@ -416,9 +536,16 @@ button:disabled {
   justify-content: space-between;
   align-items: center;
   gap: 18px;
-  padding: 18px;
-  border-radius: 14px;
+  padding: 14px;
+  border-radius: 10px;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.awesome-plugin-card {
+  border-color: rgba(52, 211, 153, 0.18);
+  background:
+    linear-gradient(180deg, rgba(20, 184, 166, 0.08), rgba(12, 12, 18, 0.72)),
+    linear-gradient(180deg, rgba(28, 28, 38, 0.78), rgba(12, 12, 18, 0.72));
 }
 
 .plugin-card:hover,
@@ -431,15 +558,15 @@ button:disabled {
 .plugin-title-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
 .command {
   max-width: min(62vw, 560px);
-  margin: 8px 0 0;
+  margin: 7px 0 0;
   color: var(--text-muted);
-  font-size: 0.84rem;
+  font-size: 0.78rem;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -447,10 +574,47 @@ button:disabled {
 
 .status {
   font-size: 0.68rem;
-  padding: 4px 9px;
-  border-radius: 999px;
+  padding: 4px 8px;
+  border-radius: 8px;
   font-weight: 800;
   text-transform: uppercase;
+}
+
+.source-pill {
+  color: #99f6e4;
+  background: rgba(20, 184, 166, 0.12);
+  border: 1px solid rgba(45, 212, 191, 0.24);
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.verify-pill {
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 0.68rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.verify-pill.ok {
+  color: #bbf7d0;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.24);
+}
+
+.verify-pill.error {
+  color: #fecaca;
+  background: rgba(220, 38, 38, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.28);
+}
+
+.plugin-verify-error {
+  margin: 7px 0 0;
+  color: #fecaca;
+  font-size: 0.74rem;
+  line-height: 1.35;
 }
 
 .status.active {
@@ -468,6 +632,47 @@ button:disabled {
 .plugin-actions {
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.power-btn,
+.remove-btn {
+  min-height: 34px;
+  padding: 7px 11px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+}
+
+.power-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.power-btn.active {
+  color: #d1fae5;
+  background: rgba(5, 150, 105, 0.18);
+  border-color: rgba(45, 212, 191, 0.34);
+}
+
+.power-btn.inactive {
+  color: #fecaca;
+  background: rgba(220, 38, 38, 0.12);
+  border-color: rgba(248, 113, 113, 0.28);
+}
+
+.power-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 12px currentColor;
+}
+
+.remove-btn {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .add-plugin,
@@ -485,6 +690,50 @@ button:disabled {
   gap: 18px;
   align-items: center;
   margin-top: 0;
+}
+
+.directory-actions {
+  display: grid;
+  grid-template-columns: minmax(180px, 260px) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.search-box {
+  position: relative;
+}
+
+.suggestion-menu {
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(10, 10, 16, 0.96);
+  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.45);
+}
+
+.suggestion-menu button {
+  min-height: 0;
+  display: grid;
+  gap: 2px;
+  justify-items: start;
+  padding: 8px 9px;
+  border-radius: 8px;
+  text-align: left;
+}
+
+.suggestion-menu small {
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .directory-toolbar span,
@@ -543,28 +792,73 @@ input:focus {
 }
 
 .awesome-grid {
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  margin-top: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .skill-card {
-  min-height: 220px;
+  min-height: 154px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 14px;
-  padding: 18px;
-  border-radius: 14px;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 10px;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
+.skill-card.installed {
+  border-color: rgba(45, 212, 191, 0.26);
+  background:
+    linear-gradient(180deg, rgba(20, 184, 166, 0.1), rgba(12, 12, 18, 0.72)),
+    linear-gradient(180deg, rgba(28, 28, 38, 0.78), rgba(12, 12, 18, 0.72));
+}
+
+.skill-main {
+  min-height: 74px;
+}
+
+.skill-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.skill-card h3 {
+  font-size: 0.98rem;
+  line-height: 1.22;
+  overflow-wrap: anywhere;
+}
+
+.installed-pill {
+  flex-shrink: 0;
+  color: #99f6e4;
+  background: rgba(20, 184, 166, 0.12);
+  border: 1px solid rgba(45, 212, 191, 0.24);
+  border-radius: 7px;
+  padding: 3px 6px;
+  font-size: 0.62rem;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
 .skill-card p {
+  display: -webkit-box;
+  margin: 7px 0 0;
   color: var(--text-secondary);
-  line-height: 1.45;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
 }
 
 code {
   color: #c4b5fd;
+  font-size: 0.72rem;
+  line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
@@ -593,6 +887,38 @@ code {
   width: 100%;
 }
 
+.install-btn {
+  min-height: 34px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+}
+
+.installed-action {
+  color: #d1fae5;
+  background: rgba(5, 150, 105, 0.18);
+  border-color: rgba(45, 212, 191, 0.34);
+}
+
+.installed-action:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.install-message {
+  margin: -2px 0 0;
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
+.install-message.success {
+  color: #99f6e4;
+}
+
+.install-message.error {
+  color: #fecaca;
+}
+
 .notice.error {
   color: #fecaca;
   border-color: rgba(248, 113, 113, 0.38);
@@ -607,7 +933,8 @@ code {
   }
 
   .manual-form,
-  .import-section {
+  .import-section,
+  .directory-actions {
     grid-template-columns: 1fr;
   }
 

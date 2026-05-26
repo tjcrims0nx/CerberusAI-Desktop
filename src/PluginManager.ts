@@ -12,8 +12,12 @@ export interface PluginConfig {
     args?: string[];
     env?: Record<string, string>;
     url?: string;
+    cwd?: string;
     enabled: boolean;
     requiresAuth?: boolean;
+    verified?: boolean;
+    verifiedAt?: string;
+    verifyError?: string;
 }
 
 export class PluginManager {
@@ -39,6 +43,7 @@ export class PluginManager {
                 args: p.args,
                 env: p.env,
                 url: p.url,
+                cwd: p.cwd,
                 enabled: false // Users must explicitly enable newly discovered plugins
             }));
             return configs;
@@ -52,6 +57,28 @@ export class PluginManager {
      * Load plugins from configuration array
      */
     async loadPlugins(configs: PluginConfig[]) {
+        for (const config of configs) {
+            if (config.enabled) {
+                try {
+                    await this.startPlugin(config);
+                } catch (error) {
+                    console.warn(`Failed to sync plugin ${config.id}:`, error);
+                }
+            }
+        }
+    }
+
+    /**
+     * Make active clients match the saved plugin config exactly.
+     */
+    async syncPlugins(configs: PluginConfig[]) {
+        const enabled = new Set(configs.filter(config => config.enabled).map(config => config.id));
+        for (const pluginId of this.activePlugins) {
+            if (!enabled.has(pluginId)) {
+                await this.stopPlugin(pluginId);
+            }
+        }
+
         for (const config of configs) {
             if (config.enabled) {
                 await this.startPlugin(config);
@@ -78,10 +105,9 @@ export class PluginManager {
                 requestInit: Object.keys(headers).length > 0 ? { headers } : undefined
             });
         } else if (config.command && config.args) {
-            transport = new TauriTransport(config.id, config.command, config.args, config.env);
+            transport = new TauriTransport(config.id, config.command, config.args, config.env, config.cwd);
         } else {
-            console.error(`Plugin ${config.name} must have either a URL or a command`);
-            return;
+            throw new Error(`Plugin ${config.name} must have either a URL or a command`);
         }
 
         const client = new Client(
@@ -95,6 +121,7 @@ export class PluginManager {
             console.log(`Plugin ${config.name} connected successfully.`);
         } catch (error) {
             console.error(`Failed to connect to plugin ${config.name}:`, error);
+            throw error;
         }
     }
 

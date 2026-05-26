@@ -79,7 +79,9 @@ pub async fn verify_key(api_key: &str) -> Result<String, anyhow::Error> {
     } else if r.status().as_u16() == 401 || r.status().as_u16() == 403 {
         Err(anyhow::anyhow!("invalid API key (HTTP {})", r.status()))
     } else {
-        Err(anyhow::anyhow!("API returned status {}", r.status()))
+        let status = r.status();
+        let body = r.text().await.unwrap_or_default();
+        Err(anyhow::anyhow!("API returned status {status}: {body}"))
     }
 }
 

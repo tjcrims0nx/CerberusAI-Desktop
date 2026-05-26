@@ -26,7 +26,8 @@ export class TauriTransport implements Transport {
         pluginId: string,
         private command: string,
         private args: string[],
-        private env?: Record<string, string>
+        private env?: Record<string, string>,
+        private cwd?: string
     ) {
         this.pluginId = pluginId;
     }
@@ -57,7 +58,8 @@ export class TauriTransport implements Transport {
                 pluginId: this.pluginId,
                 command: this.command,
                 args: this.args,
-                env: this.env
+                env: this.env,
+                cwd: this.cwd
             });
         } catch (error) {
             this.onerror?.(new Error(`Failed to start MCP server: ${error}`));

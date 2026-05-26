@@ -612,6 +612,59 @@ a:hover { color: #d8b4fe; }
   flex-direction: row-reverse;
 }
 
+.msg-stack {
+  max-width: 85%;
+  display: flex;
+  flex-direction: column;
+  gap: 0.42rem;
+}
+
+.msg-stack.user {
+  align-items: flex-end;
+}
+
+.msg-stack .msg-bubble {
+  max-width: 100%;
+}
+
+.response-actions {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0 0.25rem 0 0.1rem;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 0.76rem;
+}
+
+.copy-response-btn {
+  min-height: 26px;
+  padding: 4px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 7px;
+  color: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.035);
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.copy-response-btn:hover {
+  color: #f4f4f5;
+  border-color: rgba(192, 132, 252, 0.28);
+  background: rgba(168, 85, 247, 0.12);
+}
+
+.response-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  font-family: 'JetBrains Mono', monospace;
+  color: rgba(255, 255, 255, 0.5);
+}
+
 .composer {
   padding: 1rem 1.5rem 1.5rem;
   flex-shrink: 0;
@@ -666,43 +719,4 @@ a:hover { color: #d8b4fe; }
   display: flex;
   align-items: center;
   justify-content: center;
-}
-.beta-update-pill {
-  position: fixed;
-  bottom: 24px;
-  right: 24px;
-  background: rgba(15, 15, 15, 0.9);
-  border: 1px solid rgba(234, 179, 8, 0.4);
-  color: #eab308;
-  padding: 12px 24px;
-  border-radius: 9999px;
-  font-family: 'Inter', sans-serif;
-  font-size: 0.85rem;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  z-index: 9999;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5), inset 0 0 10px rgba(234, 179, 8, 0.1);
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  backdrop-filter: blur(8px);
-}
-
-.beta-update-pill:hover {
-  transform: translateY(-2px);
-  background: rgba(30, 30, 30, 0.95);
-  border-color: rgba(234, 179, 8, 0.6);
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.6), inset 0 0 15px rgba(234, 179, 8, 0.2);
-}
-
-.beta-update-pill:active {
-  transform: translateY(0);
-}
-
-.beta-update-pill:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
 }

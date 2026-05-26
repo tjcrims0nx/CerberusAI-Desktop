@@ -20,9 +20,40 @@ jobs:
   build-windows:
     name: Build Windows installer
     runs-on: windows-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.ref_name, '-') }}
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Resolve release tag
+        id: tag
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Validate stable release tag
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.tag.outputs.tag }}".Trim()
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Stable releases must use tags like v0.4.0. Got '$tag'. Use the prerelease workflow for beta tags."
+          }
+
+          $packageVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $tauriVersion = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargoText = Get-Content src-tauri/Cargo.toml -Raw
+          $cargoVersion = [regex]::Match($cargoText, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
+          $expected = $tag.TrimStart('v')
+
+          if ($packageVersion -ne $expected -or $tauriVersion -ne $expected -or $cargoVersion -ne $expected) {
+            throw "Tag/version mismatch. tag=$tag package=$packageVersion tauri=$tauriVersion cargo=$cargoVersion"
+          }
 
       - name: Set up Node 24
         uses: actions/setup-node@v5
@@ -78,16 +109,6 @@ jobs:
             src-tauri/target/release/bundle/nsis/Cerberus-Setup.exe
             src-tauri/target/release/bundle/msi/*.msi
             SHA256SUMS.txt
-
-      - name: Resolve release tag
-        id: tag
-        shell: bash
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ inputs.tag }}" >> $GITHUB_OUTPUT
-          else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-          fi
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

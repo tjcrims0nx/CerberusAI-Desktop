@@ -143,10 +143,8 @@ async function handleFileSelect(e: Event) {
 
 const streamingContent = ref<string>("");
 const updating = ref<boolean>(false);
-const betaUpdating = ref<boolean>(false);
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
-const betaUpdateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
-const appVersion = ref<string>("0.4.0-beta.2");
+const appVersion = ref<string>("0.4.0");
 const messagesEl = ref<HTMLElement | null>(null);
 const lastTtft = ref<number | null>(null);
 const lastTps = ref<number | null>(null);
@@ -186,6 +184,8 @@ const showFileManager = ref(false);
 const showPluginManager = ref(false);
 const pluginManager = new PluginManager();
 const mcpToolMap = ref<Map<string, string>>(new Map()); // toolName -> pluginId
+const mcpConfigs = ref<any[]>([]);
+let mcpStartupPromise: Promise<void> | null = null;
 const localGgufs = ref<GgufFile[]>([]);
 const isDeletingGguf = ref(false);
 const managerTab = ref<'ollama' | 'files' | 'cloud'>('ollama');
@@ -232,6 +232,55 @@ async function refreshLocalGgufs() {
     console.error("Failed to list ggufs", e);
     localGgufs.value = [];
   }
+}
+
+async function refreshMcpTools() {
+  const allTools = await pluginManager.getAllTools();
+  const newMap = new Map<string, string>();
+  const ollamaTools = allTools.map(({ pluginId, tool }) => {
+    newMap.set(tool.name, pluginId);
+    return {
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description || "",
+        parameters: tool.inputSchema || { type: "object", properties: {} },
+      },
+    };
+  });
+  mcpToolMap.value = newMap;
+  return ollamaTools;
+}
+
+async function connectMcpPlugins(configs?: any[]) {
+  if (configs) {
+    mcpConfigs.value = configs;
+  } else {
+    const savedPlugins = await invoke<string | null>("db_get_kv", { key: "mcp-plugins" });
+    if (savedPlugins) {
+      mcpConfigs.value = JSON.parse(savedPlugins);
+    } else {
+      mcpConfigs.value = await pluginManager.discoverPlugins();
+      await invoke("db_set_kv", { key: "mcp-plugins", value: JSON.stringify(mcpConfigs.value) });
+    }
+  }
+
+  await pluginManager.syncPlugins(mcpConfigs.value);
+  await refreshMcpTools();
+}
+
+function startMcpImmediately() {
+  if (mcpStartupPromise) return mcpStartupPromise;
+  mcpStartupPromise = connectMcpPlugins()
+    .catch((e) => {
+      console.warn("Failed to connect MCP plugins at startup", e);
+      mcpStartupPromise = null;
+    });
+  return mcpStartupPromise;
+}
+
+async function handlePluginsChanged(configs: any[]) {
+  await connectMcpPlugins(configs);
 }
 
 async function deleteGguf(filename: string) {
@@ -359,6 +408,7 @@ const apiKeyVerified = ref<boolean>(false);
 const apiKeyDraft = ref<string>("");
 const verifying = ref<boolean>(false);
 const verifyError = ref<string>("");
+const lastVerifyFailureWasInvalidKey = ref(false);
 
 // Active model pull
 const pulling = ref<{
@@ -503,6 +553,18 @@ const SYSTEM_PROMPT = [
 ].join("\n");
 
 function newChat() {
+  if (streaming.value) {
+    invoke("cancel_chat").catch(console.warn);
+  }
+  streaming.value = false;
+  streamingContent.value = "";
+  draft.value = "";
+  attachedImages.value = [];
+  attachedFiles.value = [];
+  dragActive.value = false;
+  lastTtft.value = null;
+  lastTps.value = null;
+
   const id = uid();
   chats.value.unshift({
     id,
@@ -568,7 +630,7 @@ async function refreshModels() {
     const allowed = new Set(allowedModels.value.map((m) => modelKey(m.id)));
     const filtered = allowed.size > 0
       ? list.filter((m) => allowed.has(modelKey(m.name)))
-      : [];
+      : list;
     models.value = filtered;
 
     if (
@@ -609,7 +671,7 @@ async function checkApi() {
     const msg = String(e ?? "unknown");
     cloudStatus.value = msg.includes("401") || msg.includes("403")
       ? { kind: "error", message: "Invalid API key" }
-      : { kind: "error", message: msg };
+      : { kind: "error", message: `Cloud auth service unavailable: ${msg}` };
   }
 }
 
@@ -623,18 +685,6 @@ async function checkForUpdate() {
     console.warn("check_for_update failed", e);
     // If it fails, we set a dummy state so the UI doesn't hang in "CHECKING..."
     updateInfo.value = { current: appVersion.value, latest: "unknown", available: false };
-  }
-}
-
-async function checkForBetaUpdate() {
-  try {
-    const info = await invoke<{ current: string; latest: string; available: boolean }>(
-      "check_for_beta_update"
-    );
-    betaUpdateInfo.value = info;
-  } catch (e) {
-    console.warn("check_for_beta_update failed", e);
-    betaUpdateInfo.value = { current: appVersion.value, latest: "unknown", available: false };
   }
 }
 
@@ -656,15 +706,17 @@ async function scrollToBottom() {
 async function verifyKey(key: string): Promise<boolean> {
   verifying.value = true;
   verifyError.value = "";
+  lastVerifyFailureWasInvalidKey.value = false;
   try {
     await invoke<string>("check_api", { apiKey: key });
     return true;
   } catch (e: any) {
     const msg = String(e ?? "unknown");
     if (msg.includes("401") || msg.includes("403")) {
+      lastVerifyFailureWasInvalidKey.value = true;
       verifyError.value = "Invalid API key.";
     } else {
-      verifyError.value = `Verify failed: ${msg}`;
+      verifyError.value = `Cloud auth service unavailable. Your key was not rejected. Detail: ${msg}`;
     }
     return false;
   } finally {
@@ -685,6 +737,7 @@ async function submitKey() {
     apiKeyVerified.value = true;
     invoke("db_set_kv", { key: APIKEY_KEY, value: key }).catch(console.error);
     apiKeyDraft.value = "";
+    await connectMcpPlugins();
     await checkApi();
     await refreshAllowedModels();
     if (localStatus.value.running) await refreshModels();
@@ -773,41 +826,11 @@ async function send() {
     }
   }, 300_000);
 
-  // Gather MCP tools for the LLM
-  try {
-    const rawPlugins = await invoke<string | null>("db_get_kv", { key: 'mcp-plugins' });
-    if (rawPlugins) {
-      const parsed = JSON.parse(rawPlugins);
-      await pluginManager.loadPlugins(parsed);
-    } else {
-      // Auto-discover default plugin paths (Node/Python)
-      const discovered = await pluginManager.discoverPlugins();
-      if (discovered.length > 0) {
-        await pluginManager.loadPlugins(discovered);
-        invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(discovered) }).catch(console.error);
-      }
-    }
-  } catch (e) {
-    console.warn("Failed to load or discover MCP plugins", e);
-  }
   let ollamaTools: any[] | undefined;
   try {
-    const allTools = await pluginManager.getAllTools();
-    if (allTools.length > 0) {
-      const newMap = new Map<string, string>();
-      ollamaTools = allTools.map(({ pluginId, tool }) => {
-        newMap.set(tool.name, pluginId);
-        return {
-          type: "function",
-          function: {
-            name: tool.name,
-            description: tool.description || "",
-            parameters: tool.inputSchema || { type: "object", properties: {} },
-          },
-        };
-      });
-      mcpToolMap.value = newMap;
-    }
+    await startMcpImmediately();
+    const tools = await refreshMcpTools();
+    ollamaTools = tools.length > 0 ? tools : undefined;
   } catch (e) {
     console.warn("Failed to gather MCP tools", e);
   }
@@ -1052,20 +1075,6 @@ async function handleUpdate() {
   }
 }
 
-async function handleBetaUpdate() {
-  if (betaUpdating.value) return;
-  if (!betaUpdateInfo.value?.available) return;
-  betaUpdating.value = true;
-  try {
-    await invoke("update_beta_app");
-  } catch (e) {
-    console.error("Beta Update failed", e);
-    alert(`Beta Update failed: ${e}`);
-  } finally {
-    betaUpdating.value = false;
-  }
-}
-
 function useSuggestion(text: string) {
   draft.value = text;
 }
@@ -1084,6 +1093,8 @@ onMounted(async () => {
     console.warn("Failed to load initial DB state", e);
   }
 
+  startMcpImmediately();
+
   await loadChats();
   try {
     appVersion.value = await getVersion();
@@ -1092,7 +1103,7 @@ onMounted(async () => {
   }
   if (apiKey.value) {
     apiKeyVerified.value = await verifyKey(apiKey.value);
-    if (!apiKeyVerified.value) {
+    if (!apiKeyVerified.value && lastVerifyFailureWasInvalidKey.value) {
       invoke("db_delete_kv", { key: APIKEY_KEY }).catch(console.error);
       apiKey.value = "";
     }
@@ -1100,7 +1111,6 @@ onMounted(async () => {
   await Promise.all([
     detectHardware(),
     checkForUpdate(),
-    checkForBetaUpdate(),
     apiKey.value ? checkApi() : Promise.resolve(),
     apiKey.value ? refreshAllowedModels() : Promise.resolve(),
   ]);
@@ -1122,34 +1132,7 @@ onMounted(async () => {
     vramUsage.value += (vramTarget - vramUsage.value) * 0.2;
   }, 1000);
 
-  // Auto-load MCP plugins from the encrypted app store.
-  let savedPlugins: string | null = null;
-  try {
-    savedPlugins = await invoke<string | null>("db_get_kv", { key: "mcp-plugins" });
-    if (savedPlugins) {
-      const parsed = JSON.parse(savedPlugins);
-      await pluginManager.loadPlugins(parsed);
-    }
-  } catch (e) {
-    console.warn("Failed to load saved MCP plugins", e);
-  }
-
-  // Auto-discover bundled/default cloud plugins if no plugin list exists yet.
-  if (!savedPlugins) {
-    try {
-      const discovered = await pluginManager.discoverPlugins();
-      if (discovered.length > 0) {
-        for (const p of discovered) {
-          p.enabled = true;
-          await pluginManager.startPlugin(p);
-        }
-        await invoke("db_set_kv", { key: "mcp-plugins", value: JSON.stringify(discovered) });
-        console.log(`Auto-loaded ${discovered.length} MCP plugin(s)`);
-      }
-    } catch (e) {
-      console.warn("Failed to auto-discover MCP plugins", e);
-    }
-  }
+  await startMcpImmediately();
 });
 </script>
 
@@ -1207,7 +1190,7 @@ onMounted(async () => {
         </div>
       </div>
       <div style="flex: 1; overflow-y: auto; padding: 0;">
-        <PluginSettings :apiKey="apiKey" />
+        <PluginSettings :apiKey="apiKey" @pluginsChanged="handlePluginsChanged" />
       </div>
     </div>
   </div>
@@ -1366,9 +1349,10 @@ onMounted(async () => {
         <a href="https://ollama.com/download/windows" target="_blank" rel="noopener">ollama.com</a>.
         <button class="banner-retry" @click="checkLocal">Retry</button>
       </div>
-      <div v-else-if="cloudStatus.kind !== 'ok'" class="banner">
-        Cloud auth check failed. Your API key may have been revoked at
+      <div v-else-if="cloudStatus.kind === 'error'" class="banner">
+        {{ cloudStatus.message || 'Cloud auth check failed.' }}
         <a href="https://access.cerberusai.dev" target="_blank" rel="noopener">access.cerberusai.dev</a>.
+        <button class="banner-retry" @click="checkApi">Retry</button>
       </div>
 
       <div class="chats-container" ref="chatsContainer">
@@ -1467,19 +1451,6 @@ onMounted(async () => {
           </div>
         </div>
       </div>
-
-        <button
-          v-if="betaUpdateInfo?.available && !updating"
-          class="beta-update-pill"
-          @click="handleBetaUpdate"
-          :disabled="betaUpdating"
-        >
-          <span v-if="betaUpdating">UPDATING BETA...</span>
-          <template v-else>
-            <span class="update-dot" style="background: #eab308; box-shadow: 0 0 10px #eab308;"></span>
-            BETA UPDATE TO v{{ betaUpdateInfo.latest }}
-          </template>
-        </button>
     </main>
   </div>
 </template>

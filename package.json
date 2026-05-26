@@ -1,13 +1,15 @@
 {
   "name": "cerberus-desktop",
   "private": true,
-  "version": "0.4.0-beta.2",
+  "version": "0.4.0",
   "type": "module",
   "description": "Cerberus AI — local-first chat dashboard for uncensored language models",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
+    "verify:plugins": "node scratch/test-installed-plugins.mjs --quiet",
+    "verify:plugins:json": "node scratch/test-installed-plugins.mjs --json",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

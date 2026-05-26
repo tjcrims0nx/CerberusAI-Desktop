@@ -391,6 +391,8 @@ pub fn run() {
             db_get_kv,
             db_delete_kv,
             mcp_bridge::load_mcp_config,
+            mcp_bridge::search_awesome_skills,
+            mcp_bridge::install_awesome_skill,
             mcp_bridge::spawn_mcp_server,
             mcp_bridge::send_mcp_message,
             mcp_bridge::kill_mcp_server,
