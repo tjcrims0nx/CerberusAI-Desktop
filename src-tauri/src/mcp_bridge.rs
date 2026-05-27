@@ -70,6 +70,8 @@ pub struct AwesomeSkill {
 }
 
 struct GitHubSource {
+    owner: String,
+    repo: String,
     clone_url: String,
     branch: Option<String>,
     subdir: Option<PathBuf>,
@@ -151,13 +153,15 @@ fn normalize_github_source(url: &str) -> Result<GitHubSource, String> {
         return Err("GitHub URL must include an owner and repository.".into());
     }
 
-    let owner = &segments[0];
-    let repo = &segments[1];
+    let owner = segments[0].clone();
+    let repo = segments[1].clone();
     let clone_url = format!("https://github.com/{owner}/{repo}.git");
 
     if segments.len() >= 5 && (segments[2] == "tree" || segments[2] == "blob") {
         let subdir = segments[4..].iter().collect::<PathBuf>();
         return Ok(GitHubSource {
+            owner,
+            repo,
             clone_url,
             branch: Some(segments[3].clone()),
             subdir: Some(subdir),
@@ -165,6 +169,8 @@ fn normalize_github_source(url: &str) -> Result<GitHubSource, String> {
     }
 
     Ok(GitHubSource {
+        owner,
+        repo,
         clone_url,
         branch: None,
         subdir: None,
@@ -699,6 +705,89 @@ async fn verify_mcp_plugin(command: &str, args: &[String], cwd: &Path) -> Result
     }
 }
 
+async fn command_available(command: &str) -> bool {
+    Command::new(command)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .await
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+async fn download_github_zipball(source: &GitHubSource, target_dir: &Path) -> Result<(), String> {
+    let reference = source.branch.as_deref().unwrap_or("HEAD");
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/zipball/{}",
+        source.owner, source.repo, reference
+    );
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("CerberusDesktop/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("Failed to prepare GitHub downloader: {e}"))?;
+    let response = client
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|e| format!("Failed to download GitHub zipball: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "GitHub zipball download failed for {}/{}: HTTP {}",
+            source.owner,
+            source.repo,
+            response.status()
+        ));
+    }
+    let zip_bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read GitHub zipball: {e}"))?
+        .to_vec();
+
+    let target = target_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let reader = std::io::Cursor::new(zip_bytes);
+        let mut archive = zip::ZipArchive::new(reader)
+            .map_err(|e| format!("Downloaded GitHub zipball was invalid: {e}"))?;
+
+        std::fs::create_dir_all(&target)
+            .map_err(|e| format!("Failed to create plugin folder: {e}"))?;
+
+        for index in 0..archive.len() {
+            let mut file = archive
+                .by_index(index)
+                .map_err(|e| format!("Failed to read zip entry: {e}"))?;
+            let Some(enclosed) = file.enclosed_name() else {
+                continue;
+            };
+            let stripped: PathBuf = enclosed.components().skip(1).collect();
+            if stripped.as_os_str().is_empty() {
+                continue;
+            }
+            let out_path = target.join(stripped);
+            if file.is_dir() {
+                std::fs::create_dir_all(&out_path)
+                    .map_err(|e| format!("Failed to create plugin directory: {e}"))?;
+            } else {
+                if let Some(parent) = out_path.parent() {
+                    std::fs::create_dir_all(parent)
+                        .map_err(|e| format!("Failed to create plugin directory: {e}"))?;
+                }
+                let mut out = std::fs::File::create(&out_path)
+                    .map_err(|e| format!("Failed to write plugin file: {e}"))?;
+                std::io::copy(&mut file, &mut out)
+                    .map_err(|e| format!("Failed to extract plugin file: {e}"))?;
+            }
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Plugin extraction task failed: {e}"))?
+}
+
 #[tauri::command]
 pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) -> Result<DiscoveredPlugin, String> {
     let source = normalize_github_source(&url)?;
@@ -716,24 +805,38 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
         if let Some(branch) = &source.branch {
             clone.args(["--branch", branch]);
         }
-        let output = clone
+        let clone_result = clone
             .arg(&source.clone_url)
             .arg(&target_dir)
             .output()
-            .await
-            .map_err(|e| format!("Failed to run git clone. Is Git installed and on PATH? {}", e))?;
-        if !output.status.success() {
-            return Err(format!(
-                "git clone failed for {}: {}{}",
-                source.clone_url,
-                String::from_utf8_lossy(&output.stderr),
-                String::from_utf8_lossy(&output.stdout)
-            ));
+            .await;
+        match clone_result {
+            Ok(output) if output.status.success() => {}
+            Ok(output) => {
+                let _ = tokio::fs::remove_dir_all(&target_dir).await;
+                download_github_zipball(&source, &target_dir).await.map_err(|zip_error| {
+                    format!(
+                        "git clone failed for {}: {}{}\nGitHub zip fallback also failed: {}",
+                        source.clone_url,
+                        String::from_utf8_lossy(&output.stderr),
+                        String::from_utf8_lossy(&output.stdout),
+                        zip_error
+                    )
+                })?;
+            }
+            Err(_) => {
+                let _ = tokio::fs::remove_dir_all(&target_dir).await;
+                download_github_zipball(&source, &target_dir).await?;
+            }
         }
     }
 
     let plugin_dir = if let Some(subdir) = &source.subdir {
         let path = target_dir.join(subdir);
+        if tokio::fs::metadata(&path).await.is_err() {
+            let _ = tokio::fs::remove_dir_all(&target_dir).await;
+            download_github_zipball(&source, &target_dir).await?;
+        }
         if tokio::fs::metadata(&path).await.is_err() {
             return Err(format!(
                 "Downloaded repository, but the linked plugin folder was not found: {}",
@@ -748,6 +851,9 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
     let package_json = plugin_dir.join("package.json");
     if tokio::fs::metadata(&package_json).await.is_ok() {
         let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
+        if !command_available(npm).await {
+            return Err("Node.js/npm is required to install this MCP plugin. Install the latest Node.js LTS, then try again.".into());
+        }
         let install = Command::new(npm)
             .arg("install")
             .current_dir(&plugin_dir)
@@ -778,6 +884,12 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
     find_skill_files(&plugin_dir, &mut skill_files).await?;
 
     let (command, args) = if !skill_files.is_empty() {
+        if !command_available(if cfg!(windows) { "node.exe" } else { "node" }).await {
+            return Err("Node.js is required to run converted SKILL.md plugins. Install the latest Node.js LTS, then try again.".into());
+        }
+        if !command_available(if cfg!(windows) { "npm.cmd" } else { "npm" }).await {
+            return Err("npm is required to install converted SKILL.md plugin dependencies. Install the latest Node.js LTS, then try again.".into());
+        }
         ensure_skill_wrapper_dependencies(&plugin_dir).await?;
         let wrapper = write_skill_wrapper(&plugin_dir).await?;
         ("node".to_string(), vec![wrapper.to_string_lossy().to_string()])

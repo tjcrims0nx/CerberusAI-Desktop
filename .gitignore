@@ -28,6 +28,7 @@ deploy/access-site/
 
 # User-supplied test files
 test_install.ps1
+test_apikey.py
 
 # Local release/build leftovers
 release-out/

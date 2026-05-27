@@ -48,6 +48,7 @@ $RepoName     = "CerberusAI-Desktop"
 $WebView2Url  = "https://go.microsoft.com/fwlink/p/?LinkId=2124703"   # Evergreen Bootstrapper
 $OllamaUrl    = "https://ollama.com/download/OllamaSetup.exe"
 $OllamaApi    = "https://api.github.com/repos/ollama/ollama/releases/latest"
+$NodeIndexUrl = "https://nodejs.org/dist/index.json"
 $WorkDir      = Join-Path $env:TEMP "CerberusInstall"
 
 # ---------- Custom Model Registry ----------
@@ -172,6 +173,66 @@ function Test-WingetReady {
         & winget --version *> $null
         return $LASTEXITCODE -eq 0
     } catch { return $false }
+}
+
+function Get-LatestNodeLts {
+    try {
+        $releases = Invoke-RestMethod -Uri $NodeIndexUrl -Headers @{ "User-Agent" = "CerberusInstaller" } -TimeoutSec 15
+        $latest = @($releases | Where-Object { $_.lts -and ($_.files -contains "win-x64-msi") } | Select-Object -First 1)
+        if (-not $latest) { return $null }
+        $version = [string]$latest[0].version
+        return [pscustomobject]@{
+            Version = $version.TrimStart("v","V")
+            Url = "https://nodejs.org/dist/$version/node-$version-x64.msi"
+        }
+    } catch {
+        Write-Warn2 "Could not reach nodejs.org for latest Node.js LTS ($($_.Exception.Message))."
+        return $null
+    }
+}
+
+function Ensure-Node {
+    $nodeOk = Test-Command "node"
+    $npmOk = Test-Command "npm"
+    if ($nodeOk -and $npmOk) {
+        $nodeVersion = (& node --version 2>$null | Select-Object -First 1)
+        Write-OK "Node.js/npm present ($nodeVersion)"
+        return
+    }
+
+    Write-Step "Installing Node.js LTS for MCP plugins"
+    Ensure-WorkDir
+
+    if (Test-WingetReady) {
+        try {
+            & winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -eq 0 -and (Test-Command "node") -and (Test-Command "npm")) {
+                Write-OK "Node.js LTS installed"
+                return
+            }
+            Write-Warn2 "winget install OpenJS.NodeJS.LTS returned $LASTEXITCODE; falling back to direct MSI"
+        } catch {
+            Write-Warn2 "winget Node.js install failed ($($_.Exception.Message)); falling back to direct MSI"
+        }
+    }
+
+    $node = Get-LatestNodeLts
+    if (-not $node) {
+        throw "Node.js/npm is required for MCP plugin installs. Install Node.js LTS from https://nodejs.org/ and rerun Cerberus."
+    }
+
+    $msi = Join-Path $WorkDir "node-lts-x64.msi"
+    Save-Url -Url $node.Url -Path $msi | Out-Null
+    $args = @("/i", "`"$msi`"", "/quiet", "/norestart")
+    $p = Start-Process "msiexec.exe" -ArgumentList $args -Wait -PassThru
+    if ($p.ExitCode -ne 0) { throw "Node.js installer exit code $($p.ExitCode)" }
+
+    $env:PATH = [Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [Environment]::GetEnvironmentVariable("PATH", "User")
+    if (-not (Test-Command "node") -or -not (Test-Command "npm")) {
+        Write-Warn2 "Node.js installed but this shell has not refreshed PATH yet. Restart Cerberus before installing plugins."
+    } else {
+        Write-OK "Node.js LTS installed (v$($node.Version))"
+    }
 }
 
 # ---------- Ollama version helpers ----------
@@ -412,6 +473,12 @@ function Invoke-Detect {
     } else {
         $report.OllamaCli = "MISSING"
     }
+    if (Test-Command "node") {
+        $report.Node = (& node --version 2>$null | Select-Object -First 1)
+    } else {
+        $report.Node = "MISSING"
+    }
+    $report.Npm = if (Test-Command "npm") { "available" } else { "MISSING" }
     $svcVer = Get-OllamaVersion
     $report.OllamaService = if ($svcVer) { "running ($svcVer)" } else { "not running" }
 
@@ -743,6 +810,7 @@ Write-Host "  Silent    : $Silent`n" -ForegroundColor DarkGray
 try {
     Test-MinimumHardware
     Ensure-WebView2
+    Ensure-Node
     Ensure-Ollama
     Ensure-OllamaTuning
     Ensure-Model

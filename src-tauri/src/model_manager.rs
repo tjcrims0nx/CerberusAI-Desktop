@@ -531,12 +531,21 @@ pub async fn pull_model(
     let temp_path = models_dir.join(format!("{safe_name}-{}", chosen.name));
     let sidecar_path = temp_path.with_extension("part.json");
 
-    const CHUNKS: u64 = 8;
-    let chunk_size = (total + CHUNKS - 1) / CHUNKS;
+    let mut range_check = c.get(&url).header("Range", "bytes=0-0");
+    if let Some(k) = &api_key {
+        range_check = range_check.header("Authorization", format!("Bearer {k}"));
+    }
+    let range_supported = range_check
+        .send()
+        .await
+        .map(|resp| resp.status().as_u16() == 206)
+        .unwrap_or(false);
+    let chunks: u64 = if range_supported { 8 } else { 1 };
+    let chunk_size = (total + chunks - 1) / chunks;
 
     // Resume support — if a sidecar matches this URL & total, reuse the file
     // and skip already-completed chunks. Otherwise start fresh.
-    let mut completed_chunks: Vec<bool> = vec![false; CHUNKS as usize];
+    let mut completed_chunks: Vec<bool> = vec![false; chunks as usize];
     let mut resumed_from_disk = false;
     if let Ok(bytes) = tokio::fs::read(&sidecar_path).await {
         if let Ok(side) = serde_json::from_slice::<ResumeSidecar>(&bytes) {
@@ -545,7 +554,7 @@ pub async fn pull_model(
                 Err(_) => false,
             };
             if file_ok && side.url == url && side.total == total && side.chunk_size == chunk_size
-                && side.completed_chunks.len() == CHUNKS as usize
+                && side.completed_chunks.len() == chunks as usize
             {
                 completed_chunks = side.completed_chunks;
                 resumed_from_disk = completed_chunks.iter().any(|c| *c);
@@ -585,7 +594,8 @@ pub async fn pull_model(
             let s = i as u64 * chunk_size;
             let e = ((i as u64 + 1) * chunk_size).min(total);
             e - s
-        }).sum();
+        }).sum::<u64>()
+        .min(total);
     let completed = Arc::new(AtomicU64::new(already_bytes));
     let chunk_done_flags = Arc::new(tokio::sync::Mutex::new(completed_chunks.clone()));
     let mut handles: Vec<tokio::task::JoinHandle<Result<(), anyhow::Error>>> = Vec::new();
@@ -599,7 +609,7 @@ pub async fn pull_model(
             .build()?
     );
 
-    for i in 0..CHUNKS {
+    for i in 0..chunks {
         let byte_start = i * chunk_size;
         if byte_start >= total { break; }
         if completed_chunks[i as usize] {
@@ -628,7 +638,7 @@ pub async fn pull_model(
             }
             let resp = req.send().await?;
             let status = resp.status();
-            if status.as_u16() != 206 && !status.is_success() {
+            if status.as_u16() != 206 && !(chunk_size_clone == total_clone && status.is_success()) {
                 return Err(anyhow::anyhow!("chunk {i} HTTP {status}"));
             }
             let mut stream = resp.bytes_stream();
@@ -659,7 +669,10 @@ pub async fn pull_model(
                             Ok(None) => break,
                             Ok(Some(Err(e))) => return Err(e.into()),
                             Ok(Some(Ok(bytes))) => {
-                                dl_done.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                                let prev = dl_done.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                                if prev.saturating_add(bytes.len() as u64) > total_clone {
+                                    dl_done.store(total_clone, Ordering::Relaxed);
+                                }
                                 f.write_all(&bytes).await?;
                             }
                         }
@@ -695,7 +708,8 @@ pub async fn pull_model(
     loop {
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                let current = completed.load(Ordering::Relaxed);
+                let current = completed.load(Ordering::Relaxed).min(total);
+                completed.store(current, Ordering::Relaxed);
                 let now = std::time::Instant::now();
                 samples.push_back((now, current));
                 while samples.len() > 6 {

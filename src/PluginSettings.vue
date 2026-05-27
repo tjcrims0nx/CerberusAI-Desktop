@@ -360,7 +360,7 @@ async function installAwesomeSkill(skill: AwesomeSkill) {
   } catch (e: any) {
     installMessages.value[skill.url] = {
       kind: 'error',
-      text: e?.message || `Failed to install ${skill.name}.`
+      text: typeof e === 'string' ? e : (e?.message || `Failed to install ${skill.name}.`)
     };
   } finally {
     installingUrl.value = '';

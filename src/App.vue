@@ -144,7 +144,7 @@ async function handleFileSelect(e: Event) {
 const streamingContent = ref<string>("");
 const updating = ref<boolean>(false);
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
-const appVersion = ref<string>("0.4.0");
+const appVersion = ref<string>("0.4.1");
 const messagesEl = ref<HTMLElement | null>(null);
 const lastTtft = ref<number | null>(null);
 const lastTps = ref<number | null>(null);
@@ -452,7 +452,19 @@ function fmtEta(secs?: number): string {
 function fmtDownloadBytes(done?: number, total?: number): string {
   if (!done && !total) return "";
   if (!total) return formatBytes(done ?? 0);
-  return `${formatBytes(done ?? 0)} / ${formatBytes(total)}`;
+  return `${formatBytes(Math.min(done ?? 0, total))} / ${formatBytes(total)}`;
+}
+
+function clampDownloadProgress(done?: number, total?: number): { completed?: number; total?: number; pct: number } {
+  if (!total || total <= 0) {
+    return { completed: done, total, pct: pulling.value?.pct ?? 0 };
+  }
+  const completed = Math.max(0, Math.min(done ?? 0, total));
+  return {
+    completed,
+    total,
+    pct: Math.max(0, Math.min(100, Math.floor((completed / total) * 100))),
+  };
 }
 
 function downloadPhase(status?: string): string {
@@ -1018,13 +1030,13 @@ async function pullModel(name: string, quant?: string) {
   pulling.value = { name: displayName, pct: 0, status: "starting…" };
   const channel = new Channel<PullProgress>();
   channel.onmessage = (p) => {
-    const pct = p.total && p.completed ? Math.floor((p.completed / p.total) * 100) : pulling.value?.pct ?? 0;
+    const progress = clampDownloadProgress(p.completed, p.total);
     pulling.value = {
       name: displayName,
-      pct,
+      pct: progress.pct,
       status: p.status || "downloading",
-      completed: p.completed,
-      total: p.total,
+      completed: progress.completed,
+      total: progress.total,
       bps: p.bytes_per_second,
       eta: p.eta_seconds,
       resumed: p.resumed ?? pulling.value?.resumed,
