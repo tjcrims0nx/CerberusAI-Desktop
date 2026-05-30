@@ -144,7 +144,7 @@ async function handleFileSelect(e: Event) {
 const streamingContent = ref<string>("");
 const updating = ref<boolean>(false);
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
-const appVersion = ref<string>("0.4.3");
+const appVersion = ref<string>("0.4.4");
 const messagesEl = ref<HTMLElement | null>(null);
 const lastTtft = ref<number | null>(null);
 const lastTps = ref<number | null>(null);
