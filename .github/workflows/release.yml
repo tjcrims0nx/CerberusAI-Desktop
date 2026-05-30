@@ -123,6 +123,7 @@ jobs:
             SHA256SUMS.txt
 
       - name: Update cerberusai.dev release summary
+        timeout-minutes: 3
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -131,6 +132,11 @@ jobs:
           SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
           RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:SERVER_HOST) -or [string]::IsNullOrWhiteSpace($env:SERVER_USERNAME) -or [string]::IsNullOrWhiteSpace($env:SERVER_SSH_KEY)) {
+            Write-Host "Server deploy secrets are not configured; skipping cerberusai.dev release summary."
+            exit 0
+          }
+
           $release = gh release view $env:RELEASE_TAG --repo "${{ github.repository }}" --json tagName,url,assets | ConvertFrom-Json
 
           function Format-AssetSize([long] $bytes) {
@@ -203,7 +209,7 @@ jobs:
           systemctl reload nginx
           '@
 
-          $remote | ssh -i $keyPath -o StrictHostKeyChecking=accept-new "$env:SERVER_USERNAME@$env:SERVER_HOST" "RELEASE_PAYLOAD_B64='$payloadB64' bash -s"
+          $remote | ssh -i $keyPath -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2 -o StrictHostKeyChecking=accept-new "$env:SERVER_USERNAME@$env:SERVER_HOST" "RELEASE_PAYLOAD_B64='$payloadB64' bash -s"
 
       - name: Post stable release changelog to Discord
         shell: pwsh
