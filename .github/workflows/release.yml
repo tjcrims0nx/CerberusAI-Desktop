@@ -123,6 +123,7 @@ jobs:
             SHA256SUMS.txt
 
       - name: Update cerberusai.dev release summary
+        continue-on-error: true
         timeout-minutes: 3
         shell: pwsh
         env:
