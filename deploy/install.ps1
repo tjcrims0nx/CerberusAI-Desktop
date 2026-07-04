@@ -10,7 +10,7 @@
       4. The Cerberus desktop app itself (NSIS installer from GitHub Releases)
 
 .PARAMETER Model
-    Ollama model tag to pull. Default: qwen2.5:3b (small, runs everywhere).
+    Ollama model tag to pull. Default: qwen-3.6-annihilated from the Cerberus registry.
     Use "skip" to skip the model pull.
 
 .PARAMETER ReleaseTag
@@ -29,11 +29,11 @@
     powershell -ExecutionPolicy Bypass -File install.ps1 -Check
 
 .EXAMPLE
-    powershell -ExecutionPolicy Bypass -File install.ps1 -Model "qwen2.5:7b" -Silent
+    powershell -ExecutionPolicy Bypass -File install.ps1 -Model "phi-4-mini-instruct-annihilated" -Silent
 #>
 [CmdletBinding()]
 param(
-    [string]$Model = "qwen2.5:3b",
+    [string]$Model = "qwen-3.6-annihilated",
     [string]$ReleaseTag = "latest",
     [switch]$Check,
     [switch]$Silent
@@ -55,7 +55,9 @@ $WorkDir      = Join-Path $env:TEMP "CerberusInstall"
 $CustomModels = @{
     "cerberus-4b" = "https://llm.cerberusai.dev/models/cerberus-4b-v2-abliterated/cerberus-4b-v2-abliterated-Q4_K_M.gguf"
     "cerberus-4b-v2-abliterated" = "https://llm.cerberusai.dev/models/cerberus-4b-v2-abliterated/cerberus-4b-v2-abliterated-Q4_K_M.gguf"
-    "arbiter-9b"  = "https://llm.cerberusai.dev/models/Arbiter-GL9b/Arbiter-GL9b-Q4_K_M.gguf"
+    "qwen-3.6-annihilated" = "https://llm.cerberusai.dev/models/qwen-3.6-annihilated/qwen-3.6-annihilated-Q4_K_M.gguf"
+    "phi-4-mini-instruct-annihilated" = "https://llm.cerberusai.dev/models/phi-4-mini-instruct-annihilated/phi-4-mini-instruct-annihilated-Q4_K_M.gguf"
+    "gemma-4-4b-it-annihilated" = "https://llm.cerberusai.dev/models/gemma-4-4b-it-annihilated/gemma-4-4b-it-annihilated-Q4_K_M.gguf"
 }
 
 # ---------- Brand output ----------
@@ -823,8 +825,8 @@ try {
 
 Write-Host ""
 Write-OK "All set. Launch Cerberus from the Start Menu, or run:  cerberus"
-Write-Host "    Note: Premium models (Arbiter/Cerberus) will be pulled automatically" -ForegroundColor DarkGray
-Write-Host "          from our registry once you open the desktop app." -ForegroundColor DarkGray
+Write-Host "    Note: Cerberus, Qwen, Phi, and Gemma models are pulled from the Cerberus registry" -ForegroundColor DarkGray
+Write-Host "          once you open the desktop app." -ForegroundColor DarkGray
 Write-Host "    Docs:    https://cerberusai.dev/docs" -ForegroundColor DarkGray
 Write-Host "    Discord: https://discord.gg/YvfewgZ6re`n" -ForegroundColor DarkGray
 Start-Sleep -Seconds 2

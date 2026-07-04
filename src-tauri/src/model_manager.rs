@@ -244,7 +244,7 @@ async fn cdn_quants_for(
 }
 
 /// Extract the quant label out of a GGUF filename like
-/// "Arbiter-GL9b-Q4_K_M.gguf" -> "Q4_K_M". Returns None if no recognizable
+/// "qwen-3.6-annihilated-Q4_K_M.gguf" -> "Q4_K_M". Returns None if no recognizable
 /// quant suffix is found.
 fn extract_quant(filename: &str) -> Option<String> {
     let stem = filename.strip_suffix(".gguf").unwrap_or(filename);
@@ -411,11 +411,8 @@ pub async fn pull_model(
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
-    // Ollama lowercases all model names when it stores them, so any case
-    // mismatch between the API id (e.g. `Arbiter-GL9b`) and what we tell
-    // Ollama will leave the frontend's `name === "Arbiter-GL9b"` comparison
-    // failing forever — the dropdown thinks the pull never finished and
-    // re-triggers it. Normalize once here so the whole pipeline agrees.
+    // Ollama lowercases all model names when it stores them. Normalize once
+    // here so the cloud id, local model name, and UI comparisons agree.
     let ollama_model_name = name.to_lowercase();
 
     // Fail fast: if the ollama daemon isn't running or the CLI isn't on PATH,

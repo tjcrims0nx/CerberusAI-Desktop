@@ -48,13 +48,37 @@ const MODEL_KEY = "cerberus.model.v1";
 const APIKEY_KEY = "cerberus.apiKey.v1";
 
 // Ollama lowercases all model names when it stores them via `ollama create`.
-// Our cloud allowlist returns mixed-case ids (e.g. `Arbiter-GL9b`). Without
-// case-insensitive comparison the dropdown thinks the model is still missing
-// after a successful pull and re-triggers it forever. Use this everywhere
-// we compare a local Ollama model name against an allowlist id.
+// Use case-insensitive comparison everywhere we compare local Ollama names
+// against the cloud allowlist.
 function modelKey(name: string | null | undefined): string {
   if (!name) return "";
   return name.replace(/:latest$/, "").toLowerCase();
+}
+
+const CURRENT_CERBERUS_MODEL_IDS = new Set([
+  "qwen-3.6-annihilated",
+  "cerberus-4b-v2-abliterated",
+  "phi-4-mini-instruct-annihilated",
+  "gemma-4-4b-it-annihilated",
+]);
+
+const LEGACY_CERBERUS_MODEL_MARKERS = [
+  "arbiter",
+  "gl9b",
+  "gamma3",
+  "smolked",
+  "smol",
+  "mistral",
+  "uncensored",
+];
+
+function isCurrentCerberusModel(name: string | null | undefined): boolean {
+  return CURRENT_CERBERUS_MODEL_IDS.has(modelKey(name));
+}
+
+function isLegacyCerberusModel(name: string | null | undefined): boolean {
+  const key = modelKey(name);
+  return LEGACY_CERBERUS_MODEL_MARKERS.some((marker) => key.includes(marker));
 }
 
 const chats = ref<Chat[]>([]);
@@ -629,7 +653,7 @@ async function refreshAllowedModels() {
     const rawModels = await invoke<AllowedModel[]>("list_allowed_models", {
       apiKey: apiKey.value,
     });
-    allowedModels.value = rawModels;
+    allowedModels.value = rawModels.filter((m) => isCurrentCerberusModel(m.id));
   } catch (e) {
     console.warn("list_allowed_models failed", e);
     allowedModels.value = [];
@@ -640,9 +664,10 @@ async function refreshModels() {
   try {
     const list = await invoke<OllamaModel[]>("list_models");
     const allowed = new Set(allowedModels.value.map((m) => modelKey(m.id)));
+    const withoutLegacy = list.filter((m) => !isLegacyCerberusModel(m.name));
     const filtered = allowed.size > 0
-      ? list.filter((m) => allowed.has(modelKey(m.name)))
-      : list;
+      ? withoutLegacy.filter((m) => allowed.has(modelKey(m.name)))
+      : withoutLegacy;
     models.value = filtered;
 
     if (
@@ -900,7 +925,7 @@ async function send() {
   try {
     await invoke("chat_stream", {
       // Ollama stores model names lowercase. Use modelKey() so a UI value
-      // like "Arbiter-GL9b" is dispatched as "arbiter-gl9b".
+      // like "Phi-4-Mini-Instruct-Annihilated" is dispatched consistently.
       model: modelKey(selectedModel.value),
       messages: messagesToSend,
       tools: ollamaTools,
