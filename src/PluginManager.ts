@@ -81,7 +81,11 @@ export class PluginManager {
 
         for (const config of configs) {
             if (config.enabled) {
-                await this.startPlugin(config);
+                try {
+                    await this.startPlugin(config);
+                } catch (error) {
+                    console.warn(`Failed to start plugin ${config.id} (${config.name}):`, error);
+                }
             }
         }
     }

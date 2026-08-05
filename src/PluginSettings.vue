@@ -183,6 +183,7 @@ type AwesomeSkill = {
 
 const props = defineProps<{
   apiKey: string;
+  activePlugins?: string[];
 }>();
 
 const emit = defineEmits<{
@@ -405,6 +406,9 @@ const updateActivePlugins = () => {
 };
 
 const isPluginActive = (id: string) => {
+  if (props.activePlugins && props.activePlugins.length > 0) {
+    return props.activePlugins.includes(id);
+  }
   return activePlugins.value.includes(id);
 };
 

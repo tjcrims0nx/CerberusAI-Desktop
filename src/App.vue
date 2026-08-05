@@ -282,6 +282,8 @@ async function refreshMcpTools() {
   return ollamaTools;
 }
 
+const activePluginIds = ref<string[]>([]);
+
 async function connectMcpPlugins(configs?: any[]) {
   if (configs) {
     mcpConfigs.value = configs;
@@ -296,6 +298,7 @@ async function connectMcpPlugins(configs?: any[]) {
   }
 
   await pluginManager.syncPlugins(mcpConfigs.value);
+  activePluginIds.value = [...pluginManager.activePlugins];
   await refreshMcpTools();
 }
 
@@ -1213,7 +1216,7 @@ onMounted(async () => {
         </div>
       </div>
       <div style="flex: 1; overflow-y: auto; padding: 0;">
-        <PluginSettings :apiKey="apiKey" @pluginsChanged="handlePluginsChanged" />
+        <PluginSettings :apiKey="apiKey" :activePlugins="activePluginIds" @pluginsChanged="handlePluginsChanged" />
       </div>
     </div>
   </div>
