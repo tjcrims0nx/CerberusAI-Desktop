@@ -1313,7 +1313,7 @@ onMounted(async () => {
       <div class="chats-container" ref="chatsContainer">
         <div class="chats-inner">
           <ChatView
-            v-if="activeChat"
+            v-if="activeChat && activeChat.messages.length > 0"
             :activeChat="activeChat"
             :models="models"
             :streaming="streaming"
