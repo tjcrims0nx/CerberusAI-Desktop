@@ -118,13 +118,7 @@ jobs:
           make_latest: false
           generate_release_notes: true
           body: |
-            Beta channel build.
-
-            One-line install:
-
-            ```powershell
-            irm https://cerberusai.dev/get-beta | iex
-            ```
+            Beta channel build. Download installers directly from GitHub Releases.
           files: |
             src-tauri/target/release/bundle/nsis/Cerberus-Beta-Setup.exe
             SHA256SUMS.txt
