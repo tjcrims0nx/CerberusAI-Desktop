@@ -740,6 +740,67 @@ async function send() {
   if (!modelInList && !modelIsGguf) return;
 
   const chat = activeChat.value;
+
+  if (text.startsWith("/mcp")) {
+    const parts = text.split(" ").filter(Boolean);
+    const subCmd = (parts[1] || "list").toLowerCase();
+    const target = parts.slice(2).join(" ").trim().toLowerCase();
+
+    draft.value = "";
+    attachedImages.value = [];
+    attachedFiles.value = [];
+
+    const userMsg: any = { role: "user", content: text };
+    chat.messages.push(userMsg);
+
+    let systemReply = "";
+
+    if (subCmd === "list") {
+      if (mcpConfigs.value.length === 0) {
+        systemReply = "🔌 **No MCP plugins configured.**\n\nType `/mcp open` or click **MCP Plugins** in the sidebar to add local or remote servers.";
+      } else {
+        const items = mcpConfigs.value.map(p => {
+          const active = pluginManager.activePlugins.includes(p.id);
+          const statusIcon = p.enabled ? (active ? "🟢" : "🟡") : "🔴";
+          const statusLabel = p.enabled ? (active ? "Connected & Ready" : "Connecting...") : "Disabled";
+          const details = p.url ? `URL: \`${p.url}\`` : `Command: \`${p.command} ${(p.args || []).join(" ")}\``;
+          return `${statusIcon} **${p.name}** (\`${p.id}\`)\n  - Status: *${statusLabel}*\n  - ${details}`;
+        }).join("\n\n");
+        systemReply = `🔌 **MCP Plugins (${mcpConfigs.value.length})**\n\n${items}\n\n*Quick Commands:*\n- \`/mcp enable <name|id>\` — Activate a plugin\n- \`/mcp disable <name|id>\` — Deactivate a plugin\n- \`/mcp open\` — Open Plugin Manager modal`;
+      }
+    } else if (subCmd === "enable" || subCmd === "on" || subCmd === "start") {
+      const match = mcpConfigs.value.find(p => p.id.toLowerCase() === target || p.name.toLowerCase().includes(target));
+      if (match) {
+        match.enabled = true;
+        await invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(mcpConfigs.value) });
+        await connectMcpPlugins(mcpConfigs.value);
+        systemReply = `✅ **Activated MCP Plugin:** ${match.name}\n\nConnected to server and tools are ready for chat prompts.`;
+      } else {
+        systemReply = `❌ **Plugin not found matching:** "${target}".\n\nType \`/mcp list\` to view available plugin IDs.`;
+      }
+    } else if (subCmd === "disable" || subCmd === "off" || subCmd === "stop") {
+      const match = mcpConfigs.value.find(p => p.id.toLowerCase() === target || p.name.toLowerCase().includes(target));
+      if (match) {
+        match.enabled = false;
+        await invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(mcpConfigs.value) });
+        await connectMcpPlugins(mcpConfigs.value);
+        systemReply = `🔌 **Deactivated MCP Plugin:** ${match.name}`;
+      } else {
+        systemReply = `❌ **Plugin not found matching:** "${target}".\n\nType \`/mcp list\` to view available plugin IDs.`;
+      }
+    } else if (subCmd === "open" || subCmd === "settings" || subCmd === "gui") {
+      showPluginManager.value = true;
+      systemReply = "⚙️ Opened **MCP Plugin Manager**.";
+    } else {
+      systemReply = "ℹ️ **MCP Chat Commands:**\n- `/mcp list` — Show all plugins and connection status\n- `/mcp enable <id>` — Activate a plugin by ID or name\n- `/mcp disable <id>` — Deactivate a plugin\n- `/mcp open` — Open Plugin Manager modal";
+    }
+
+    chat.messages.push({ role: "assistant", content: systemReply });
+    saveChats();
+    await scrollToBottom();
+    return;
+  }
+
   const userMsg: any = { role: "user", content: text };
   if (attachedImages.value.length > 0) {
     userMsg.images = [...attachedImages.value];
@@ -1365,6 +1426,10 @@ onMounted(async () => {
                 <button @click="triggerFileInput(); showAttachMenu = false" class="attach-menu-item">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.7;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
                   <span>File</span>
+                </button>
+                <button @click="showPluginManager = true; showAttachMenu = false" class="attach-menu-item">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.7;"><path d="M2 12h20"></path><path d="M12 2v20"></path><path d="M20 16a4 4 0 0 0-4-4h-8a4 4 0 0 0-4 4"></path></svg>
+                  <span>MCP Plugins</span>
                 </button>
               </div>
             </div>
