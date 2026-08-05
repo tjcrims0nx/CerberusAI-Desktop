@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-component">
+  <div class="chat-component" @click="handleChatClick">
     <div
       class="msg-row"
       v-for="(m, i) in activeChat.messages"
@@ -52,6 +52,8 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+import { save } from '@tauri-apps/plugin-dialog';
 
 const props = defineProps<{
   activeChat: any;
@@ -80,5 +82,80 @@ async function copyResponse(content: string, index: number) {
   window.setTimeout(() => {
     if (copiedIndex.value === index) copiedIndex.value = null;
   }, 1400);
+}
+
+async function handleChatClick(event: MouseEvent) {
+  const target = event.target as HTMLElement;
+  const copyBtn = target.closest('.copy-code-btn') as HTMLButtonElement | null;
+  const saveBtn = target.closest('.save-code-btn') as HTMLButtonElement | null;
+
+  if (copyBtn) {
+    event.preventDefault();
+    event.stopPropagation();
+    const container = copyBtn.closest('.code-block-container');
+    const codeEl = container?.querySelector('code');
+    if (!codeEl) return;
+    const text = codeEl.textContent || '';
+    await navigator.clipboard.writeText(text);
+
+    const span = copyBtn.querySelector('span');
+    if (span) {
+      const orig = span.textContent;
+      span.textContent = 'Copied ✓';
+      copyBtn.classList.add('copied');
+      setTimeout(() => {
+        span.textContent = orig;
+        copyBtn.classList.remove('copied');
+      }, 1500);
+    }
+    return;
+  }
+
+  if (saveBtn) {
+    event.preventDefault();
+    event.stopPropagation();
+    const container = saveBtn.closest('.code-block-container');
+    const codeEl = container?.querySelector('code');
+    if (!codeEl) return;
+    const text = codeEl.textContent || '';
+    const lang = container?.getAttribute('data-lang') || 'file';
+    const defaultFilename = container?.getAttribute('data-filename') || `file.${lang}`;
+
+    const span = saveBtn.querySelector('span');
+    try {
+      const filePath = await save({
+        defaultPath: defaultFilename,
+      });
+      if (filePath) {
+        await invoke('save_text_file', { path: filePath, content: text });
+        if (span) {
+          const orig = span.textContent;
+          span.textContent = 'Saved ✓';
+          saveBtn.classList.add('saved');
+          setTimeout(() => {
+            span.textContent = orig;
+            saveBtn.classList.remove('saved');
+          }, 1500);
+        }
+      }
+    } catch {
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = defaultFilename;
+      a.click();
+      URL.revokeObjectURL(url);
+      if (span) {
+        const orig = span.textContent;
+        span.textContent = 'Saved ✓';
+        saveBtn.classList.add('saved');
+        setTimeout(() => {
+          span.textContent = orig;
+          saveBtn.classList.remove('saved');
+        }, 1500);
+      }
+    }
+  }
 }
 </script>
