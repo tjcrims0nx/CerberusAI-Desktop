@@ -34,13 +34,9 @@ Cerberus AI provides a 100% private, standalone desktop chat environment. Run lo
 
 ## 📥 Installation
 
-### Fast Install (Windows PowerShell)
+### Download & Install
 
-```powershell
-irm https://cerberusai.dev/get | iex
-```
-
-Or manually download the latest installers directly from the [GitHub Releases page](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
+Download the latest installer (`Cerberus-Setup.exe` or `Cerberus_0.5.0_x64_en-US.msi`) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
 
 ---
 

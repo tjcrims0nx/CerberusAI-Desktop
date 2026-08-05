@@ -2,11 +2,9 @@
 
 This folder tracks the beta channel source notes and installer entry points.
 
-## One-Line Beta Install
+## Beta Install
 
-```powershell
-irm https://cerberusai.dev/get-beta | iex
-```
+Download the latest pre-release installers directly from [GitHub Releases](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
 
 GitHub prereleases are built by `.github/workflows/prerelease.yml`. Each run creates a prerelease tag, uploads the Windows installers, and keeps the beta installer flow pointed at the latest prerelease.
 
