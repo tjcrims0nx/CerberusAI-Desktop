@@ -58,13 +58,17 @@
       <div class="add-plugin">
         <div class="add-heading">
           <h3>Add New Plugin</h3>
-          <span>Command-based MCP servers run locally through Tauri.</span>
+          <span>Add a command-based (stdio) or URL-based (SSE) MCP server.</span>
         </div>
         <div class="import-section">
-          <input type="text" v-model="mcpConfigPath" placeholder="Path to .mcp.json" />
+          <input type="text" v-model="mcpConfigPath" placeholder="Path to .mcp.json config file" />
           <button @click="loadFromConfig" class="btn-primary">Load Config</button>
         </div>
-        <form @submit.prevent="addPlugin" class="manual-form">
+        <div class="add-type-tabs">
+          <button :class="{ active: addMode === 'command' }" @click="addMode = 'command'">Command (stdio)</button>
+          <button :class="{ active: addMode === 'url' }" @click="addMode = 'url'">URL (SSE)</button>
+        </div>
+        <form @submit.prevent="addPlugin" class="manual-form" v-if="addMode === 'command'">
           <div class="form-group">
             <label>Plugin Name</label>
             <input v-model="newPlugin.name" placeholder="Local File System" required />
@@ -74,8 +78,19 @@
             <input v-model="newPlugin.command" placeholder="npx" required />
           </div>
           <div class="form-group wide">
-            <label>Arguments</label>
+            <label>Arguments (comma-separated)</label>
             <input v-model="newPluginArgs" placeholder="-y, @modelcontextprotocol/server-filesystem, C:/path" />
+          </div>
+          <button type="submit" class="btn-primary add-btn">Add Plugin</button>
+        </form>
+        <form @submit.prevent="addUrlPlugin" class="manual-form" v-else>
+          <div class="form-group">
+            <label>Plugin Name</label>
+            <input v-model="newPlugin.name" placeholder="Remote MCP Server" required />
+          </div>
+          <div class="form-group wide">
+            <label>SSE Endpoint URL</label>
+            <input v-model="newPluginUrl" placeholder="https://example.com/mcp/sse" required />
           </div>
           <button type="submit" class="btn-primary add-btn">Add Plugin</button>
         </form>
@@ -188,12 +203,14 @@ const showSuggestions = ref(false);
 const installingUrl = ref('');
 const installMessages = ref<Record<string, { kind: 'success' | 'error', text: string }>>({});
 
+const addMode = ref<'command' | 'url'>('command');
 const newPlugin = ref({
   name: '',
   command: ''
 });
 const newPluginArgs = ref('');
-const mcpConfigPath = ref('C:/Users/tjcri/claude-code/.mcp.json');
+const newPluginUrl = ref('');
+const mcpConfigPath = ref('');
 
 watch(() => props.apiKey, (key) => {
   pluginManager.setApiKey(key);
@@ -388,8 +405,7 @@ const updateActivePlugins = () => {
 };
 
 const isPluginActive = (id: string) => {
-  const plugin = plugins.value.find((item) => item.id === id);
-  return !!plugin?.enabled || activePlugins.value.includes(id);
+  return activePlugins.value.includes(id);
 };
 
 const isAwesomePlugin = (plugin: PluginConfig) => {
@@ -420,6 +436,24 @@ const addPlugin = async () => {
 
   newPlugin.value = { name: '', command: '' };
   newPluginArgs.value = '';
+};
+
+const addUrlPlugin = async () => {
+  const id = `plugin_${Date.now()}`;
+
+  const config: PluginConfig = {
+    id,
+    name: newPlugin.value.name,
+    url: newPluginUrl.value.trim(),
+    enabled: true
+  };
+
+  plugins.value.push(config);
+  savePlugins();
+  updateActivePlugins();
+
+  newPlugin.value = { name: '', command: '' };
+  newPluginUrl.value = '';
 };
 
 const removePlugin = async (id: string) => {
@@ -759,6 +793,23 @@ button:disabled {
 .import-section {
   grid-template-columns: 1fr auto;
   margin: 16px 0;
+}
+
+.add-type-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  margin-bottom: 4px;
+}
+
+.add-type-tabs button.active {
+  border-color: rgba(168, 85, 247, 0.35);
+  background: rgba(168, 85, 247, 0.22);
+  color: #fff;
 }
 
 .manual-form {
