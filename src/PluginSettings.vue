@@ -434,10 +434,7 @@ const removePlugin = async (id: string) => {
   min-height: 100%;
   padding: 22px;
   color: var(--text-primary);
-  background:
-    radial-gradient(circle at 12% 0%, rgba(185, 28, 28, 0.22), transparent 30%),
-    radial-gradient(circle at 88% 20%, rgba(124, 58, 237, 0.2), transparent 28%),
-    linear-gradient(180deg, rgba(8, 8, 12, 0.35), rgba(8, 8, 12, 0.82));
+  background: transparent;
 }
 
 .plugin-topbar,
@@ -447,10 +444,11 @@ const removePlugin = async (id: string) => {
 .skill-card,
 .empty-panel,
 .notice {
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: linear-gradient(180deg, rgba(28, 28, 38, 0.78), rgba(12, 12, 18, 0.72));
-  box-shadow: 0 20px 55px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(18px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(24px) saturate(1.4);
+  border-radius: 12px;
 }
 
 .plugin-topbar {
@@ -461,53 +459,60 @@ const removePlugin = async (id: string) => {
   justify-content: space-between;
   gap: 18px;
   align-items: center;
-  padding: 16px;
-  border-radius: 14px;
+  padding: 14px 16px;
 }
 
 .plugin-eyebrow {
-  margin: 0 0 5px;
-  color: #fb7185;
+  margin: 0 0 4px;
+  color: #c084fc;
   font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.14em;
+  font-weight: 700;
+  letter-spacing: 0.1em;
   text-transform: uppercase;
 }
 
 h2,
 h3 {
   margin: 0;
-  letter-spacing: 0;
+  letter-spacing: 0.02em;
+  font-weight: 700;
 }
 
 .plugin-tabs {
   display: grid;
   grid-template-columns: repeat(2, minmax(120px, 1fr));
   gap: 6px;
-  padding: 5px;
+  padding: 4px;
   border-radius: 12px;
-  background: rgba(0, 0, 0, 0.26);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .plugin-tabs button,
 button {
-  min-height: 38px;
-  padding: 9px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.11);
-  border-radius: 10px;
+  min-height: 36px;
+  padding: 8px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
   cursor: pointer;
   color: var(--text-primary);
   background: rgba(255, 255, 255, 0.04);
-  font-weight: 800;
+  font-weight: 600;
+  font-size: 0.84rem;
   letter-spacing: 0;
-  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+  transition: background var(--duration-fast) ease, border-color var(--duration-fast) ease, transform 60ms ease;
 }
 
 button:hover:not(:disabled) {
-  transform: translateY(-1px);
-  border-color: rgba(248, 113, 113, 0.45);
-  box-shadow: 0 12px 26px rgba(0, 0, 0, 0.3);
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  transform: none;
+  box-shadow: none;
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.97);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 button:disabled {
@@ -516,9 +521,10 @@ button:disabled {
 }
 
 .plugin-tabs button.active {
-  border-color: rgba(248, 113, 113, 0.5);
-  background: linear-gradient(135deg, rgba(220, 38, 38, 0.72), rgba(124, 58, 237, 0.66));
-  box-shadow: 0 10px 28px rgba(185, 28, 28, 0.24);
+  border-color: rgba(168, 85, 247, 0.35);
+  background: rgba(168, 85, 247, 0.22);
+  color: #fff;
+  box-shadow: none;
 }
 
 .plugin-section {
@@ -537,7 +543,7 @@ button:disabled {
   align-items: center;
   gap: 18px;
   padding: 14px;
-  border-radius: 10px;
+  border-radius: 12px;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
@@ -681,7 +687,7 @@ button:disabled {
 .notice {
   margin-top: 16px;
   padding: 18px;
-  border-radius: 14px;
+  border-radius: 12px;
 }
 
 .directory-toolbar {
@@ -777,7 +783,7 @@ input {
   min-height: 40px;
   padding: 10px 12px;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 10px;
+  border-radius: 12px;
   background: rgba(0, 0, 0, 0.34);
   color: white;
   font-size: 0.9rem;
@@ -804,7 +810,7 @@ input:focus {
   justify-content: space-between;
   gap: 10px;
   padding: 12px;
-  border-radius: 10px;
+  border-radius: 12px;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 

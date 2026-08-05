@@ -24,7 +24,7 @@
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
-  background-color: #050505;
+  background-color: transparent;
 }
 
 .flare {

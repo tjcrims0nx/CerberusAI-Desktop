@@ -8,6 +8,7 @@ mod model_manager;
 mod tuning;
 mod mcp_bridge;
 mod provider_manager;
+mod llama_engine;
 mod permission_guard;
 mod secure_db;
 
@@ -75,11 +76,14 @@ async fn check_api(api_key: String) -> Result<String, String> {
     model_manager::verify_key(&api_key).await.map_err(|e| e.to_string())
 }
 
-/// Fetch the server-side allowlist of models from llm.cerberusai.dev.
-/// Returned ids are qualified for `ollama pull`.
 #[tauri::command]
-async fn list_allowed_models(api_key: String) -> Result<Vec<model_manager::AllowedModel>, String> {
-    model_manager::list_allowed(&api_key).await.map_err(|e| e.to_string())
+async fn search_huggingface(query: String) -> Result<Vec<model_manager::HfSearchResult>, String> {
+    model_manager::search_huggingface(&query).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn list_huggingface_files(repo_id: String) -> Result<Vec<model_manager::HfGgufFile>, String> {
+    model_manager::list_huggingface_files(&repo_id).await.map_err(|e| e.to_string())
 }
 
 /// Compare the bundled app version against the latest GitHub release.
@@ -98,10 +102,11 @@ async fn check_local_ollama() -> model_manager::LocalStatus {
     model_manager::local_status().await
 }
 
-/// List models actually pulled into the user's local Ollama.
+/// List models available locally (Ollama models + raw .gguf files).
 #[tauri::command]
-async fn list_models() -> Result<Vec<model_manager::ModelInfo>, String> {
-    model_manager::list_local().await.map_err(|e| e.to_string())
+async fn list_models(app: tauri::AppHandle) -> Result<Vec<model_manager::ModelInfo>, String> {
+    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    model_manager::list_local(app_dir).await.map_err(|e| e.to_string())
 }
 
 struct PullState(Mutex<Option<watch::Sender<bool>>>);
@@ -110,9 +115,8 @@ struct ChatState(Mutex<Option<watch::Sender<bool>>>);
 /// Stream `ollama pull <name>` progress to the frontend.
 #[tauri::command]
 async fn pull_model(
-    name: String,
-    quant: Option<String>,
-    api_key: Option<String>,
+    repo_id: String,
+    filename: String,
     on_event: Channel<model_manager::PullProgress>,
     state: tauri::State<'_, PullState>,
     app: tauri::AppHandle,
@@ -120,7 +124,7 @@ async fn pull_model(
     let (tx, rx) = watch::channel(false);
     *state.0.lock().await = Some(tx);
     let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let result = model_manager::pull_model(name, quant, api_key, app_dir, on_event, rx).await;
+    let result = model_manager::pull_model(repo_id, filename, app_dir, on_event, rx).await;
     *state.0.lock().await = None;
     result.map_err(|e| e.to_string())
 }
@@ -134,6 +138,29 @@ async fn cancel_pull(state: tauri::State<'_, PullState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Check if the bundled llama.cpp engine is available and running.
+#[tauri::command]
+async fn engine_status(app: tauri::AppHandle) -> llama_engine::EngineStatus {
+    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    llama_engine::engine_status(&app_dir).await
+}
+
+/// Download / setup the bundled llama-server engine binary.
+#[tauri::command]
+async fn setup_engine(app: tauri::AppHandle) -> Result<String, String> {
+    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let path = llama_engine::find_or_download_llama_server(&app_dir)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(path.display().to_string())
+}
+
+/// Stop the llama-server engine process.
+#[tauri::command]
+fn stop_engine() {
+    llama_engine::stop_server();
+}
+
 /// Stream a chat completion from the user's local Ollama.
 #[tauri::command]
 async fn chat_stream(
@@ -142,9 +169,11 @@ async fn chat_stream(
     tools: Option<Vec<model_manager::OllamaToolDef>>,
     on_event: Channel<ChatStreamChunk>,
     state: tauri::State<'_, ChatState>,
+    app: tauri::AppHandle,
 ) -> Result<(), String> {
     let (tx, rx) = watch::channel(false);
     *state.0.lock().await = Some(tx);
+    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
     let result = provider_manager::ProviderManager::route_chat(
         "ollama",
         model,
@@ -152,6 +181,7 @@ async fn chat_stream(
         tools,
         on_event,
         rx,
+        app_dir,
     )
     .await;
     *state.0.lock().await = None;
@@ -295,6 +325,15 @@ pub fn run() {
         .manage(PullState(Mutex::new(None)))
         .manage(ChatState(Mutex::new(None)))
         .setup(|app| {
+            #[cfg(target_os = "windows")]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window_vibrancy::apply_mica(&window, Some(true));
+            }
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window_vibrancy::apply_vibrancy(&window, window_vibrancy::NSVisualEffectMaterial::HudWindow, None, None);
+            }
+
             let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
             if let Ok(db) = secure_db::SecureDb::new(app_dir) {
                 app.manage(db);
@@ -337,12 +376,16 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             check_api,
-            list_allowed_models,
+            search_huggingface,
+            list_huggingface_files,
             check_for_update,
             check_local_ollama,
             list_models,
             pull_model,
             cancel_pull,
+            engine_status,
+            setup_engine,
+            stop_engine,
             chat_stream,
             cancel_chat,
             detect_hardware,

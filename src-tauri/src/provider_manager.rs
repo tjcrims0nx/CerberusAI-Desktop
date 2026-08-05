@@ -1,7 +1,5 @@
-//! Provider Manager abstracts API calls (like OpenAI, Anthropic, or Local Ollama)
-//! and dynamically routes chat requests.
-
 use crate::{ChatMessage, ChatStreamChunk};
+use std::path::PathBuf;
 use tauri::ipc::Channel;
 
 pub struct ProviderManager;
@@ -14,35 +12,63 @@ impl ProviderManager {
         tools: Option<Vec<crate::model_manager::OllamaToolDef>>,
         on_event: Channel<ChatStreamChunk>,
         cancel: tokio::sync::watch::Receiver<bool>,
+        app_dir: PathBuf,
     ) -> Result<(), anyhow::Error> {
+        let is_gguf_file = model.to_lowercase().ends_with(".gguf") || model.contains('/') || model.contains('\\');
+
+        if is_gguf_file || provider == "llama_cpp" {
+            let model_path = if std::path::Path::new(&model).is_absolute() {
+                PathBuf::from(&model)
+            } else {
+                app_dir.join("models").join(&model)
+            };
+            return crate::llama_engine::stream_chat_llama(
+                model_path,
+                messages,
+                on_event,
+                cancel,
+                app_dir,
+            )
+            .await;
+        }
+
         match provider {
-            "ollama" => crate::model_manager::stream_chat_local(model, messages, tools, on_event, cancel).await,
-            "airllm" => {
-                let client = reqwest::Client::new();
-                let payload = serde_json::json!({
-                    "model": model,
-                    "messages": messages,
-                    "temperature": 0.7,
-                    "max_tokens": 1024
-                });
-                let resp = client.post("http://127.0.0.1:11435/v1/chat/completions")
-                    .json(&payload)
-                    .send()
-                    .await?;
-
-                let json: serde_json::Value = resp.json().await?;
-                let content = json["choices"][0]["message"]["content"].as_str().unwrap_or("");
-
-                let _ = on_event.send(ChatStreamChunk {
-                    delta: content.to_string(),
-                    done: true,
-                    error: None,
-                    ttft_ms: None,
-                    tps: None,
-                    tool_calls: None,
-                });
-
-                Ok(())
+            "ollama" => {
+                // Try Ollama first if daemon is active
+                let local = crate::model_manager::local_status().await;
+                if local.running {
+                    crate::model_manager::stream_chat_local(model, messages, tools, on_event, cancel).await
+                } else {
+                    // Fall back to llama_engine if user has a matching .gguf file in app_dir/models
+                    let gguf_name = format!("{}.gguf", model.to_lowercase());
+                    let candidate = app_dir.join("models").join(&gguf_name);
+                    if tokio::fs::metadata(&candidate).await.is_ok() {
+                        crate::llama_engine::stream_chat_llama(
+                            candidate,
+                            messages,
+                            on_event,
+                            cancel,
+                            app_dir,
+                        )
+                        .await
+                    } else {
+                        Err(anyhow::anyhow!(
+                            "Ollama daemon is not running and no local `{}` GGUF file was found in models.",
+                            model
+                        ))
+                    }
+                }
+            }
+            "llama_cpp" => {
+                let candidate = app_dir.join("models").join(&model);
+                crate::llama_engine::stream_chat_llama(
+                    candidate,
+                    messages,
+                    on_event,
+                    cancel,
+                    app_dir,
+                )
+                .await
             }
             _ => Err(anyhow::anyhow!("Unsupported provider: {}", provider)),
         }

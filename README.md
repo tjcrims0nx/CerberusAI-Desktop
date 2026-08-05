@@ -1,125 +1,120 @@
-# Cerberus AI Desktop
+# Cerberus AI Desktop (v0.5.0)
 
-Local-first AI chat for CerberusAI models, built with Tauri, Rust, Vue, and Ollama.
+Local-first, independent desktop AI chat shell built with Tauri, Rust, Vue 3, and native `llama.cpp` engine.
 
 ![Cerberus chat dashboard](assets/readme/chat-dashboard.png)
 
-Cerberus runs a private desktop chat surface on your machine, streams through local Ollama models, and uses your CerberusAI API key for gated access, model catalog features, and account-backed services.
+Cerberus AI provides a 100% private, standalone desktop chat environment. Run local GGUF models directly on your hardware without needing external services, cloud API keys, or third-party background daemons.
 
-> [!IMPORTANT]
-> An active API key from [cerberusai.dev](https://cerberusai.dev) is required to unlock the desktop app.
+> [!WARNING]
+> **Beta Release Notice**: Cerberus AI Desktop v0.5.0 is currently in active Beta. Some features may experience intermittent issues. If you encounter any bugs, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/CerberusAI-Desktop/issues) so they can be reviewed and resolved.
 
-## Latest Stable
+---
 
-- **Current stable:** [v0.4.1](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases/tag/v0.4.1)
-- **NSIS installer:** `Cerberus-Setup.exe`
-- **MSI installer:** `Cerberus_0.4.1_x64_en-US.msi`
-- **Checksums:** included in `SHA256SUMS.txt`
+## ⚡ What's New in v0.5.0
 
-The public website release block on [cerberusai.dev](https://cerberusai.dev) is updated automatically when a new stable GitHub Release is published.
+- **Standalone Native `llama-server` Engine**: Built-in, high-performance `llama.cpp` integration with Vulkan GPU acceleration and FlashAttention (`-fa auto`) for 3x faster prompt processing. Zero setup required.
+- **Direct HuggingFace GGUF Search & Parallel Pulls**: Search open-source GGUF models directly from HuggingFace. Downloads use parallel 8-stream chunked requests with automatic resume support.
+- **Accurate Model & File Size Metadata**: Direct parsing of HuggingFace LFS file sizes (`💾 4.2 GB`, `💾 8.5 GB`) across search results and local GGUF cards.
+- **Live Download Progress & In-Modal Banners**: Real-time progress reporting (speed MB/s, ETA, transferred size, active status) floating above all overlays and inside the Model Manager.
+- **Dynamic Model Self-Identity**: Local models automatically recognize their true model architecture and identity (`Qwen3.5`, `Llama 3.3`, `DeepSeek R1/V3`, etc.) instead of generic prompt strings.
+- **Native Windows 11 Fluent Glass UI**: Standardized design system with Acrylic/Mica glass-morphism, smooth `--radius-xl` rounded corners, and purple ambient glow.
+- **Model Context Protocol (MCP) Support**: Built-in MCP plugin system to connect local tools and skills directly to language models.
 
-## Install
+---
 
-Run this in Windows PowerShell:
+## 📦 Latest Stable Release
+
+- **Current Stable:** [v0.5.0](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases/tag/v0.5.0)
+- **Windows Installer (NSIS):** `Cerberus-Setup.exe`
+- **Windows Installer (MSI):** `Cerberus_0.5.0_x64_en-US.msi`
+- **Checksums:** `SHA256SUMS.txt`
+
+---
+
+## 📥 Installation
+
+### Fast Install (Windows PowerShell)
 
 ```powershell
 irm https://cerberusai.dev/get | iex
 ```
 
-Or download manually from the [GitHub Releases page](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
+Or manually download the latest installers directly from the [GitHub Releases page](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
 
-The installer flow bootstraps the pieces Cerberus needs, including WebView2, Ollama, and the desktop app.
+---
 
-## What Is New
-
-- **v0.4.1 desktop refresh:** updated dark Cerberus interface, model status, and local chat shell.
-- **Model Manager:** manage local Ollama models, remote catalog pulls, raw GGUF imports, active model selection, and disk usage.
-- **MCP Plugins:** browse and install local plugins or remote awesome-skills entries from inside the app.
-- **Stable release automation:** stable GitHub Releases update Discord changelog posts and refresh the website release summary automatically.
-- **Sitewide branding:** homepage preview, logo, favicon, Apple touch icon, and social link-preview images now use the refreshed Cerberus assets.
-
-## Screenshots
+## 🖼️ Interface Showcase
 
 ### Chat Dashboard
-
 ![Cerberus chat dashboard](assets/readme/chat-dashboard.png)
 
-### Model Manager
-
+### Model Manager & HuggingFace Pulls
 ![Cerberus model manager](assets/readme/model-manager.png)
 
 ### MCP Plugin Manager
-
 ![Cerberus MCP plugins](assets/readme/mcp-plugins.png)
 
-## Features
+---
 
-### Local-First Chat
+## ✨ Core Features
 
-- Runs as a native desktop app with a Tauri shell.
-- Streams responses from local Ollama models.
-- Keeps chat interaction on your machine.
-- Shows CPU, RAM, and VRAM activity in the interface.
+### 🖥️ 100% Local & Private
+- Native desktop shell powered by Rust & Tauri.
+- Direct execution via built-in `llama-server` engine.
+- Hardware monitoring displaying real-time CPU, RAM, and VRAM usage.
+- All prompts, chats, and models stay 100% on your machine.
 
-### Model Management
+### 📦 GGUF Model Management
+- Browse & search HuggingFace open-source GGUF models.
+- Parallel multi-threaded chunked downloads with resume support.
+- One-click import for custom local `.gguf` files.
+- Active model switching and real-time disk usage analytics.
 
-- Local Ollama model registry.
-- Cloud catalog for Cerberus-hosted models.
-- Raw GGUF import flow.
-- Active model switching.
-- Disk usage summary.
-- Model metadata for size, quantization, family, and status.
+### 🔌 Model Context Protocol (MCP)
+- Built-in MCP Plugin Manager.
+- Connect filesystem tools, Web APIs, and custom agent skills.
+- Automatic tool calling loop with reasoning trace.
 
-### MCP Plugins And Skills
+---
 
-- Built-in plugin manager.
-- Local plugin browsing.
-- Remote awesome-skills discovery.
-- One-click install flow for supported skill entries.
-- Search-driven plugin discovery.
+## 💻 Development
 
-### Downloads And Updates
+### Prerequisites
+- Node.js (v18+)
+- Rust (v1.77+)
+- Tauri CLI (`npm install -g @tauri-apps/cli`)
 
-- Stable one-line installer.
-- GitHub Release installers and checksums.
-- Smart version display in the app.
-- Release workflow publishes stable builds and updates external surfaces.
-
-## Getting Started
-
-1. Install Cerberus with the PowerShell one-liner.
-2. Sign up at [cerberusai.dev](https://cerberusai.dev).
-3. Copy your API key from the dashboard.
-4. Launch Cerberus and paste the key.
-5. Pick or download a model from the Model Manager.
-6. Start chatting locally.
-
-## Development
+### Run Locally
 
 ```bash
+# Install dependencies
 npm install
-npm run tauri dev
+
+# Launch app in development mode
+npm run tauri:dev
 ```
 
-Build a production desktop app:
+### Production Build
 
 ```bash
-npm run tauri build
+# Build desktop installer executable
+npm run tauri:build
 ```
 
-## Stack
+---
 
-- **Frontend:** Vue 3, Vite
-- **Desktop:** Tauri
-- **Backend:** Rust
-- **Models:** Ollama and GGUF
-- **Release hosting:** GitHub Releases
-- **Website:** [cerberusai.dev](https://cerberusai.dev)
+## 🛠️ Technology Stack
 
-## Release Notes
+- **Desktop Framework**: Tauri 2 (Rust)
+- **Frontend Logic**: Vue 3, Vite, TypeScript
+- **Local Engine**: `llama-server` (Vulkan GPU offload + FlashAttention)
+- **Design System**: Windows 11 Fluent Glassmorphism (CSS Tokens)
+- **Distribution**: GitHub Releases & Actions Automation
 
-Stable releases are published at:
+---
 
+## 📜 License & Releases
+
+Stable releases and changelogs are published automatically at:
 [github.com/tjcrims0nx/CerberusAI-Desktop/releases](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases)
-
-Prerelease builds may exist for testing, but production website and Discord changelog automation is wired to stable releases only.

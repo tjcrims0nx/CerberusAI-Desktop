@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, nextTick, watch } from "vue";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+
 import { getVersion } from "@tauri-apps/api/app";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { marked } from "marked";
@@ -9,7 +10,6 @@ import DOMPurify from "dompurify";
 import PluginSettings from "./PluginSettings.vue";
 import Dashboard from "./components/Dashboard.vue";
 import ChatView from "./components/Chat.vue";
-import Settings from "./components/Settings.vue";
 import Models from "./components/Models.vue";
 import { PluginManager } from "./PluginManager";
 import AnimatedBackground from "./AnimatedBackground.vue";
@@ -35,7 +35,8 @@ function renderMarkdown(text: string): string {
 import type {
   Chat,
   OllamaModel,
-  AllowedModel,
+  HuggingFaceModel,
+  HuggingFaceFile,
   HardwareInfo,
   ChatStreamChunk,
   GgufFile,
@@ -45,7 +46,23 @@ import type {
 
 const STORAGE_KEY = "cerberus.chats.v1";
 const MODEL_KEY = "cerberus.model.v1";
-const APIKEY_KEY = "cerberus.apiKey.v1";
+
+// ─── Window controls (custom titlebar) ────────────────────────────────────
+const appWindow = getCurrentWindow();
+const isMaximized = ref(false);
+
+async function minimizeWindow() { await appWindow.minimize(); }
+async function toggleMaximize() {
+  await appWindow.toggleMaximize();
+  isMaximized.value = await appWindow.isMaximized();
+}
+async function closeWindow() { await appWindow.close(); }
+
+// Track maximize state
+appWindow.onResized(async () => {
+  isMaximized.value = await appWindow.isMaximized();
+});
+
 
 // Ollama lowercases all model names when it stores them via `ollama create`.
 // Use case-insensitive comparison everywhere we compare local Ollama names
@@ -55,12 +72,7 @@ function modelKey(name: string | null | undefined): string {
   return name.replace(/:latest$/, "").toLowerCase();
 }
 
-const CURRENT_CERBERUS_MODEL_IDS = new Set([
-  "qwen-3.6-annihilated",
-  "cerberus-4b-v2-abliterated",
-  "phi-4-mini-instruct-annihilated",
-  "gemma-4-4b-it-annihilated",
-]);
+
 
 const LEGACY_CERBERUS_MODEL_MARKERS = [
   "arbiter",
@@ -72,10 +84,6 @@ const LEGACY_CERBERUS_MODEL_MARKERS = [
   "uncensored",
 ];
 
-function isCurrentCerberusModel(name: string | null | undefined): boolean {
-  return CURRENT_CERBERUS_MODEL_IDS.has(modelKey(name));
-}
-
 function isLegacyCerberusModel(name: string | null | undefined): boolean {
   const key = modelKey(name);
   return LEGACY_CERBERUS_MODEL_MARKERS.some((marker) => key.includes(marker));
@@ -84,7 +92,6 @@ function isLegacyCerberusModel(name: string | null | undefined): boolean {
 const chats = ref<Chat[]>([]);
 const activeId = ref<string | null>(null);
 const models = ref<OllamaModel[]>([]);
-const allowedModels = ref<AllowedModel[]>([]);
 const selectedModel = ref<string>("");
 const cloudStatus = ref<OllamaStatus>({ kind: "checking" });
 const localStatus = ref<{ running: boolean; version?: string; error?: string }>({ running: false });
@@ -168,7 +175,7 @@ async function handleFileSelect(e: Event) {
 const streamingContent = ref<string>("");
 const updating = ref<boolean>(false);
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
-const appVersion = ref<string>("0.4.4");
+const appVersion = ref<string>("0.5.0");
 const messagesEl = ref<HTMLElement | null>(null);
 const lastTtft = ref<number | null>(null);
 const lastTps = ref<number | null>(null);
@@ -244,7 +251,6 @@ async function openFileManager() {
 }
 
 async function refreshAllModels() {
-  await refreshAllowedModels();
   await refreshModels();
   await refreshLocalGgufs();
 }
@@ -428,11 +434,6 @@ function formatBytes(bytes: number) {
 
 // API key gate
 const apiKey = ref<string>("");
-const apiKeyVerified = ref<boolean>(false);
-const apiKeyDraft = ref<string>("");
-const verifying = ref<boolean>(false);
-const verifyError = ref<string>("");
-const lastVerifyFailureWasInvalidKey = ref(false);
 
 // Active model pull
 const pulling = ref<{
@@ -503,16 +504,7 @@ function downloadPhase(status?: string): string {
 // Every allowlisted model, paired with whether it's already pulled locally.
 // Drives the dropdown so users can pick undownloaded models and have them
 // auto-pulled (LM Studio-style).
-const allModelChoices = computed(() => {
-  const local = new Set(models.value.map((m) => modelKey(m.name)));
-  return allowedModels.value.map((m) => ({
-    name: m.id,
-    downloaded: local.has(modelKey(m.id)),
-    description: m.description,
-    quants: m.quants,
-    quantSizes: m.quant_sizes ?? {},
-  }));
-});
+
 const activeChat = computed<Chat | null>(() =>
   chats.value.find((c) => c.id === activeId.value) ?? null
 );
@@ -558,6 +550,14 @@ function fmtSizeGb(bytes: number | undefined): string {
   return (bytes / 1024 / 1024 / 1024).toFixed(1) + " GB";
 }
 
+const selectedModelSize = computed(() => {
+  if (!selectedModel.value) return "";
+  const match = localGgufs.value.find(
+    (g: any) => g.name === selectedModel.value || g.name.toLowerCase() === selectedModel.value.toLowerCase()
+  );
+  return match ? formatBytes(match.size) : "";
+});
+
 function uid(): string {
   return Math.random().toString(36).slice(2, 10);
 }
@@ -577,16 +577,20 @@ function saveChats() {
   invoke("db_set_kv", { key: STORAGE_KEY, value: JSON.stringify(chats.value) }).catch(console.error);
 }
 
-const SYSTEM_PROMPT = [
-  "You are Cerberus, an advanced, autonomous AI coding agent.",
-  "You have access to Model Context Protocol (MCP) tools. You MUST proactively use these tools to read files, run commands, fetch data, and edit code to fulfill the user's requests.",
-  "Do NOT ask the user for permission to use tools, just use the tools to find the information yourself.",
-  "If you encounter an error using a tool, reason about it and try to fix it or use a different approach.",
-  "Use `<think>` blocks to outline your plan before executing complex tool sequences or code edits.",
-  "Format every response in GitHub-flavored markdown. Use elements like bold, italic, code blocks, lists, and headings appropriately.",
-  "Use emojis when they add meaning to a list item or heading (e.g., ✅ ❌ ⚠️ 🔧 📁 💻 🧠).",
-  "Be concise. Skip filler text and greetings."
-].join("\n");
+function getSystemPrompt(modelName: string): string {
+  const modelDisplayName = modelName ? modelName.replace(/\.gguf$/i, '') : "Local LLM";
+  return [
+    `You are ${modelDisplayName}, an advanced AI model running locally via the desktop engine.`,
+    `Always recognize and identify yourself as ${modelDisplayName}, not as Cerberus.`,
+    "You have access to Model Context Protocol (MCP) tools. You MUST proactively use these tools to read files, run commands, fetch data, and edit code to fulfill the user's requests.",
+    "Do NOT ask the user for permission to use tools, just use the tools to find the information yourself.",
+    "If you encounter an error using a tool, reason about it and try to fix it or use a different approach.",
+    "Use `<think>` blocks to outline your plan before executing complex tool sequences or code edits.",
+    "Format every response in GitHub-flavored markdown. Use elements like bold, italic, code blocks, lists, and headings appropriately.",
+    "Use emojis when they add meaning to a list item or heading (e.g., ✅ ❌ ⚠️ 🔧 📁 💻 🧠).",
+    "Be concise. Skip filler text and greetings."
+  ].join("\n");
+}
 
 function newChat() {
   if (streaming.value) {
@@ -628,52 +632,26 @@ function deleteChat(id: string, evt: Event) {
 }
 
 watch(selectedModel, (v) => {
-  // Only persist once the model is actually present locally — otherwise a
-  // pending-download choice would be remembered before it ever arrived.
-  if (v && models.value.some((m) => modelKey(m.name) === modelKey(v))) {
+  // Persist once the model is actually present locally (Ollama list or GGUF file)
+  const inModels = v && models.value.some((m) => modelKey(m.name) === modelKey(v));
+  const inGgufs = v && localGgufs.value.some((g) => g.name === v || g.name.toLowerCase() === v.toLowerCase());
+  if (inModels || inGgufs) {
     invoke("db_set_kv", { key: MODEL_KEY, value: v }).catch(console.error);
   }
 });
 
-// LM Studio-style: picking an undownloaded model auto-triggers the pull.
-watch(selectedModel, async (v) => {
-  if (!v) return;
-  if (models.value.some((m) => modelKey(m.name) === modelKey(v))) return;
-  if (!allowedModels.value.some((m) => modelKey(m.id) === modelKey(v))) return;
-  if (pulling.value) return;
-  await pullModel(v);
-});
 
-async function refreshAllowedModels() {
-  if (!apiKey.value) {
-    allowedModels.value = [];
-    return;
-  }
-  try {
-    const rawModels = await invoke<AllowedModel[]>("list_allowed_models", {
-      apiKey: apiKey.value,
-    });
-    allowedModels.value = rawModels.filter((m) => isCurrentCerberusModel(m.id));
-  } catch (e) {
-    console.warn("list_allowed_models failed", e);
-    allowedModels.value = [];
-  }
-}
 
 async function refreshModels() {
   try {
     const list = await invoke<OllamaModel[]>("list_models");
-    const allowed = new Set(allowedModels.value.map((m) => modelKey(m.id)));
     const withoutLegacy = list.filter((m) => !isLegacyCerberusModel(m.name));
-    const filtered = allowed.size > 0
-      ? withoutLegacy.filter((m) => allowed.has(modelKey(m.name)))
-      : withoutLegacy;
+    const filtered = withoutLegacy;
     models.value = filtered;
 
     if (
       selectedModel.value &&
-      !filtered.find((m) => modelKey(m.name) === modelKey(selectedModel.value)) &&
-      !allowedModels.value.some((m) => modelKey(m.id) === modelKey(selectedModel.value))
+      !filtered.find((m) => modelKey(m.name) === modelKey(selectedModel.value))
     ) {
       selectedModel.value = "";
     }
@@ -689,12 +667,15 @@ async function refreshModels() {
 async function checkLocal() {
   try {
     localStatus.value = await invoke("check_local_ollama");
-    if (localStatus.value.running) await refreshModels();
   } catch (e) {
     localStatus.value = { running: false, error: String(e) };
   }
+  // Always refresh models — list_models scans local GGUFs even without Ollama
+  await refreshModels();
+  await refreshLocalGgufs();
 }
 
+// @ts-ignore: checkApi kept for future re-use
 async function checkApi() {
   if (!apiKey.value) {
     cloudStatus.value = { kind: "missing" };
@@ -740,65 +721,7 @@ async function scrollToBottom() {
   }
 }
 
-async function verifyKey(key: string): Promise<boolean> {
-  verifying.value = true;
-  verifyError.value = "";
-  lastVerifyFailureWasInvalidKey.value = false;
-  try {
-    await invoke<string>("check_api", { apiKey: key });
-    return true;
-  } catch (e: any) {
-    const msg = String(e ?? "unknown");
-    if (msg.includes("401") || msg.includes("403")) {
-      lastVerifyFailureWasInvalidKey.value = true;
-      verifyError.value = "Invalid API key.";
-    } else {
-      verifyError.value = `Cloud auth service unavailable. Your key was not rejected. Detail: ${msg}`;
-    }
-    return false;
-  } finally {
-    verifying.value = false;
-  }
-}
-
-async function submitKey() {
-  const key = apiKeyDraft.value.trim();
-  if (!key) {
-    verifyError.value = "Paste your API key first.";
-    return;
-  }
-  const ok = await verifyKey(key);
-  if (ok) {
-    apiKey.value = key;
-    pluginManager.setApiKey(key);
-    apiKeyVerified.value = true;
-    invoke("db_set_kv", { key: APIKEY_KEY, value: key }).catch(console.error);
-    apiKeyDraft.value = "";
-    await connectMcpPlugins();
-    await checkApi();
-    await refreshAllowedModels();
-    if (localStatus.value.running) await refreshModels();
-  }
-}
-
-// function unlinkKey() {
-//   localStorage.removeItem(APIKEY_KEY);
-//   apiKey.value = "";
-//   apiKeyVerified.value = false;
-// }
-
-async function signOut() {
-  apiKey.value = "";
-  pluginManager.setApiKey("");
-  apiKeyVerified.value = false;
-  apiKeyDraft.value = "";
-  verifyError.value = "";
-  try {
-    await getCurrentWindow().destroy();
-  } catch (e) {
-    console.warn("window destroy failed", e);
-  }
-}
+// API key and cloud auth have been removed
 
 async function send() {
   let text = draft.value.trim();
@@ -810,13 +733,11 @@ async function send() {
   }
 
   if ((!text && attachedImages.value.length === 0) || streaming.value || !activeChat.value || !selectedModel.value) return;
-  if (!apiKeyVerified.value || !apiKey.value) return;
   if (pulling.value) return;
-  if (!models.value.some((m) => modelKey(m.name) === modelKey(selectedModel.value))) return;
-  if (!localStatus.value.running) {
-    await checkLocal();
-    if (!localStatus.value.running) return;
-  }
+  // Accept model if it's in the models list OR is a known local GGUF file
+  const modelInList = models.value.some((m) => modelKey(m.name) === modelKey(selectedModel.value));
+  const modelIsGguf = localGgufs.value.some((g) => g.name === selectedModel.value || g.name.toLowerCase() === selectedModel.value.toLowerCase());
+  if (!modelInList && !modelIsGguf) return;
 
   const chat = activeChat.value;
   const userMsg: any = { role: "user", content: text };
@@ -918,7 +839,7 @@ async function send() {
   const history = chat.messages.slice(0, -1);
   const cappedHistory = history.length > 20 ? history.slice(-20) : history;
   const messagesToSend = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: getSystemPrompt(selectedModel.value) },
     ...cappedHistory,
   ];
 
@@ -1002,7 +923,7 @@ async function send() {
       };
 
       const followUpMessages = [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: getSystemPrompt(selectedModel.value) },
         ...chat.messages.slice(0, newAssistantIdx),
       ];
 
@@ -1049,9 +970,9 @@ async function cancelDownload() {
   pulling.value = null;
 }
 
-async function pullModel(name: string, quant?: string) {
+async function pullModel(repoId: string, filename: string) {
   if (pulling.value) return;
-  const displayName = quant ? `${name} (${quant})` : name;
+  const displayName = filename.replace(/\.gguf$/i, '');
   pulling.value = { name: displayName, pct: 0, status: "starting…" };
   const channel = new Channel<PullProgress>();
   channel.onmessage = (p) => {
@@ -1071,17 +992,35 @@ async function pullModel(name: string, quant?: string) {
       pulling.value = null;
       if (!failed) {
         refreshModels().then(() => {
-          if (!selectedModel.value) selectedModel.value = name;
+          const expectedName = filename.replace(/\.gguf$/i, '').toLowerCase();
+          if (!selectedModel.value) selectedModel.value = expectedName;
         });
       }
     }
   };
   try {
-    // Forward the API key so the gateway can later require it on /models/*.
-    await invoke("pull_model", { name, quant, apiKey: apiKey.value || undefined, onEvent: channel });
+    await invoke("pull_model", { repoId, filename, onEvent: channel });
   } catch (e) {
     pulling.value = { name: displayName, pct: 0, status: `error: ${String(e)}` };
     setTimeout(() => { if (pulling.value?.name === displayName) pulling.value = null; }, 4000);
+  }
+}
+
+async function searchHuggingFace(query: string): Promise<HuggingFaceModel[]> {
+  try {
+    return await invoke<HuggingFaceModel[]>("search_huggingface", { query });
+  } catch (e) {
+    console.warn("search_huggingface failed", e);
+    return [];
+  }
+}
+
+async function listHuggingFaceFiles(repoId: string): Promise<HuggingFaceFile[]> {
+  try {
+    return await invoke<HuggingFaceFile[]>("list_huggingface_files", { repoId });
+  } catch (e) {
+    console.warn("list_huggingface_files failed", e);
+    return [];
   }
 }
 
@@ -1121,11 +1060,6 @@ onMounted(async () => {
     const savedModel = await invoke<string | null>("db_get_kv", { key: MODEL_KEY });
     if (savedModel) selectedModel.value = savedModel;
 
-    const savedKey = await invoke<string | null>("db_get_kv", { key: APIKEY_KEY });
-    if (savedKey) {
-      apiKey.value = savedKey;
-      pluginManager.setApiKey(savedKey);
-    }
   } catch (e) {
     console.warn("Failed to load initial DB state", e);
   }
@@ -1138,18 +1072,9 @@ onMounted(async () => {
   } catch (e) {
     console.warn("getVersion failed", e);
   }
-  if (apiKey.value) {
-    apiKeyVerified.value = await verifyKey(apiKey.value);
-    if (!apiKeyVerified.value && lastVerifyFailureWasInvalidKey.value) {
-      invoke("db_delete_kv", { key: APIKEY_KEY }).catch(console.error);
-      apiKey.value = "";
-    }
-  }
   await Promise.all([
     detectHardware(),
     checkForUpdate(),
-    apiKey.value ? checkApi() : Promise.resolve(),
-    apiKey.value ? refreshAllowedModels() : Promise.resolve(),
   ]);
   await checkLocal();
 
@@ -1180,7 +1105,6 @@ onMounted(async () => {
     :managerSearch="managerSearch"
     :managerTab="managerTab"
     :models="models"
-    :allowedModels="allowedModels"
     :localGgufs="localGgufs"
     :totalOllamaSize="totalOllamaSize"
     :filteredOllamaModels="filteredOllamaModels"
@@ -1191,7 +1115,8 @@ onMounted(async () => {
     :activatedGgufs="activatedGgufs"
     :isImporting="isImporting"
     :isDeletingGguf="isDeletingGguf"
-    :allModelChoices="allModelChoices"
+    :searchHuggingFace="searchHuggingFace"
+    :listHuggingFaceFiles="listHuggingFaceFiles"
     :pulling="pulling"
     :vramGb="vramGb"
     :localStatus="localStatus"
@@ -1212,15 +1137,15 @@ onMounted(async () => {
   />
 
   <!-- MCP Plugin Manager Modal -->
-  <div v-if="showPluginManager" class="gate-overlay" style="background: rgba(0,0,0,0.85); backdrop-filter: blur(8px);">
-    <div class="manager-panel" style="width: 90%; max-width: 900px; height: 85vh;">
-      <div class="manager-header" style="background: linear-gradient(180deg, rgba(30,30,30,0.9) 0%, rgba(10,10,10,0.9) 100%); border-bottom: 1px solid rgba(255,255,255,0.05); padding: 1.2rem 1.5rem;">
+  <div v-if="showPluginManager" class="gate-overlay" style="background: rgba(0,0,0,0.72); backdrop-filter: blur(24px) saturate(1.4);">
+    <div class="manager-panel" style="width: min(900px, 92vw); height: min(850px, 88vh);">
+      <div class="manager-header">
         <div class="manager-title-row">
-          <div style="width: 32px; height: 32px; border-radius: 8px; background: linear-gradient(135deg, #34d399, #059669); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px rgba(52,211,153,0.3);">
+          <div style="width: 36px; height: 36px; border-radius: 8px; background: linear-gradient(135deg, rgba(52, 211, 153, 0.85), rgba(5, 150, 105, 0.85)); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(52,211,153,0.25);">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20"></path><path d="M12 2v20"></path><path d="M20 16a4 4 0 0 0-4-4h-8a4 4 0 0 0-4 4"></path></svg>
           </div>
           <div>
-            <h2 class="manager-title" style="letter-spacing: 2px;">MCP PLUGINS</h2>
+            <h2 class="manager-title" style="letter-spacing: 0.04em;">MCP PLUGINS</h2>
             <p class="manager-subtitle">Extend Cerberus with external capabilities</p>
           </div>
           <button class="manager-close" @click="showPluginManager = false">✕</button>
@@ -1232,15 +1157,7 @@ onMounted(async () => {
     </div>
   </div>
 
-  <!-- API Key Gate -->
-  <Settings
-    :apiKeyVerified="apiKeyVerified"
-    :apiKeyDraft="apiKeyDraft"
-    :verifying="verifying"
-    :verifyError="verifyError"
-    @update:apiKeyDraft="apiKeyDraft = $event"
-    @submitKey="apiKeyDraft = $event; submitKey()"
-  />
+
 
   <!-- Top-of-window model pull loader -->
   <div v-if="pulling" class="download-bar" role="progressbar" :aria-valuenow="pulling.pct" aria-valuemin="0" aria-valuemax="100">
@@ -1267,7 +1184,7 @@ onMounted(async () => {
   </div>
 
   <div class="shell"
-       :class="{ 'shell-blocked': !apiKeyVerified, 'shell-with-progress': !!pulling }"
+       :class="{ 'shell-with-progress': !!pulling }"
        @drop.prevent="handleDrop"
        @dragover.prevent="dragActive = true"
        @dragleave.prevent="dragActive = false">
@@ -1363,34 +1280,35 @@ onMounted(async () => {
           🔌 MCP PLUGINS
         </button>
 
-        <button class="sidebar-action-btn danger" @click="signOut">
-          SIGN OUT
-        </button>
       </div>
     </aside>
 
     <!-- Main -->
     <main class="main">
-      <header class="main-header" style="background: linear-gradient(180deg, rgba(15,15,15,0.8) 0%, rgba(5,5,5,0.4) 100%); border-bottom: 1px solid rgba(255,255,255,0.05);">
-        <div style="display: flex; align-items: center; gap: 12px;">
-          <div style="height: 24px; width: 3px; border-radius: 4px; background: linear-gradient(180deg, rgba(168,85,247,0.8), rgba(99,102,241,0.8)); box-shadow: 0 0 10px rgba(168,85,247,0.4);"></div>
-          <h1 style="font-size: 1rem; font-weight: 900; letter-spacing: 0.3em; text-transform: uppercase; color: rgba(255,255,255,0.5); margin: 0;">CERBERUS <span style="color: #fff;">AI</span></h1>
+      <header class="main-header">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <h1 style="font-size: 0.82rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(255,255,255,0.45); margin: 0;">CERBERUS <span style="color: #fff;">AI</span></h1>
         </div>
-        <div class="model-tag-display" v-if="selectedModel" style="background: rgba(168,85,247,0.1); border-color: rgba(168,85,247,0.3); color: #c084fc;">
-          {{ selectedModel }}
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <div class="model-tag-display" v-if="selectedModel" style="background: rgba(168,85,247,0.12); border: 1px solid rgba(168,85,247,0.25); color: #d8b4fe; font-size: 0.75rem; padding: 4px 10px; border-radius: 6px; display: flex; align-items: center; gap: 6px;">
+            <span>{{ selectedModel }}</span>
+            <span v-if="selectedModelSize" class="model-size-badge" style="background: rgba(255,255,255,0.12); padding: 1px 6px; border-radius: 4px; font-weight: 800; color: #fff; font-size: 0.7rem;">💾 {{ selectedModelSize }}</span>
+          </div>
+          <!-- Window controls -->
+          <div class="window-controls">
+            <button class="win-btn" @click="minimizeWindow" title="Minimize">
+              <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
+            </button>
+            <button class="win-btn" @click="toggleMaximize" :title="isMaximized ? 'Restore' : 'Maximize'">
+              <svg v-if="!isMaximized" width="10" height="10" viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+              <svg v-else width="10" height="10" viewBox="0 0 10 10"><rect x="2.5" y="0.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/><rect x="0.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/></svg>
+            </button>
+            <button class="win-btn win-close" @click="closeWindow" title="Close">
+              <svg width="10" height="10" viewBox="0 0 10 10"><line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"/><line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"/></svg>
+            </button>
+          </div>
         </div>
       </header>
-
-      <div v-if="!localStatus.running" class="banner">
-        Local Ollama isn't running. Start it with <code>ollama serve</code> or install it from
-        <a href="https://ollama.com/download/windows" target="_blank" rel="noopener">ollama.com</a>.
-        <button class="banner-retry" @click="checkLocal">Retry</button>
-      </div>
-      <div v-else-if="cloudStatus.kind === 'error'" class="banner">
-        {{ cloudStatus.message || 'Cloud auth check failed.' }}
-        <a href="https://access.cerberusai.dev" target="_blank" rel="noopener">access.cerberusai.dev</a>.
-        <button class="banner-retry" @click="checkApi">Retry</button>
-      </div>
 
       <div class="chats-container" ref="chatsContainer">
         <div class="chats-inner">
@@ -2260,7 +2178,7 @@ onMounted(async () => {
   left: 0;
   right: 0;
   height: 68px;
-  z-index: 900;
+  z-index: 99999;
   background:
     radial-gradient(circle at 8% 0%, rgba(220, 38, 38, 0.26), transparent 34%),
     radial-gradient(circle at 90% 0%, rgba(124, 58, 237, 0.24), transparent 30%),

@@ -13,8 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tauri::ipc::Channel;
 
-const CLOUD_API_BASE: &str = "https://api.cerberusai.dev";
-const LLM_FILES_BASE: &str = "https://llm.cerberusai.dev";
+
 const OLLAMA_BASE: &str = "http://127.0.0.1:11434";
 
 use std::sync::OnceLock;
@@ -67,32 +66,8 @@ async fn which_ollama() -> Option<std::path::PathBuf> {
 
 /// Verify the API key against api.cerberusai.dev.
 /// Returns `"ok"` on success, or an error with the upstream status / network detail.
-pub async fn verify_key(api_key: &str) -> Result<String, anyhow::Error> {
-    let c = http()?;
-    let r = c
-        .get(format!("{CLOUD_API_BASE}/v1/models"))
-        .header("Authorization", format!("Bearer {api_key}"))
-        .send()
-        .await?;
-    if r.status().is_success() {
-        Ok("ok".to_string())
-    } else if r.status().as_u16() == 401 || r.status().as_u16() == 403 {
-        Err(anyhow::anyhow!("invalid API key (HTTP {})", r.status()))
-    } else {
-        let status = r.status();
-        let body = r.text().await.unwrap_or_default();
-        Err(anyhow::anyhow!("API returned status {status}: {body}"))
-    }
-}
-
-// ─── Cloud: GitHub release-based update check ──────────────────────────────
-
-const RELEASES_LATEST_URL: &str =
-    "https://api.github.com/repos/tjcrims0nx/CerberusAI-Desktop/releases/latest";
-
-#[derive(Debug, Deserialize)]
-struct GitHubReleaseResp {
-    tag_name: String,
+pub async fn verify_key(_api_key: &str) -> Result<String, anyhow::Error> {
+    Ok("ok".to_string())
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -102,146 +77,17 @@ pub struct UpdateInfo {
     pub available: bool,
 }
 
-fn parse_semver(s: &str) -> Vec<u64> {
-    s.trim()
-        .trim_start_matches(|c| c == 'v' || c == 'V')
-        .split(|c: char| c == '.' || c == '-' || c == '+')
-        .filter_map(|p| p.parse::<u64>().ok())
-        .collect()
-}
-
 pub async fn check_update(current: &str) -> Result<UpdateInfo, anyhow::Error> {
-    let c = http_short()?;
-    let r = c
-        .get(RELEASES_LATEST_URL)
-        .header("User-Agent", "CerberusDesktop")
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await?;
-    if !r.status().is_success() {
-        return Err(anyhow::anyhow!("GitHub API returned {}", r.status()));
-    }
-    let body = r.json::<GitHubReleaseResp>().await?;
-    let latest = body.tag_name.trim_start_matches(|c| c == 'v' || c == 'V').to_string();
-    let available = parse_semver(&latest) > parse_semver(current);
     Ok(UpdateInfo {
         current: current.to_string(),
-        latest,
-        available,
+        latest: current.to_string(),
+        available: false,
     })
 }
 
-// ─── Cloud: server-side model allowlist ────────────────────────────────────
+// ─── Cloud: GitHub release-based update check ──────────────────────────────
 
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct AllowedModel {
-    pub id: String,
-    pub description: String,
-    pub quants: String,
-    /// Per-quant on-disk file size in bytes, parsed from the CDN listing.
-    /// Map key is the quant label (e.g. "Q4_K_M"). Empty if the listing
-    /// couldn't be fetched. The frontend uses this to flag quants that
-    /// won't fit on the user's GPU before they pull.
-    #[serde(default)]
-    pub quant_sizes: std::collections::HashMap<String, u64>,
-}
 
-#[derive(Debug, Deserialize)]
-struct OpenAiModelEntry {
-    id: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    quants: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAiModelsResp {
-    #[serde(default)]
-    data: Vec<OpenAiModelEntry>,
-}
-
-/// Fetch the OpenAI-style model list from api.cerberusai.dev, then enrich
-/// each entry with the list of quants actually available on llm.cerberusai.dev.
-/// This way the manager UI reflects real downloadable files, not the static
-/// metadata the API gateway hand-curates.
-pub async fn list_allowed(api_key: &str) -> Result<Vec<AllowedModel>, anyhow::Error> {
-    let c = http()?;
-    let r = c
-        .get(format!("{CLOUD_API_BASE}/v1/models"))
-        .header("Authorization", format!("Bearer {api_key}"))
-        .send()
-        .await?;
-    if !r.status().is_success() {
-        let status = r.status();
-        if status.as_u16() == 401 || status.as_u16() == 403 {
-            return Err(anyhow::anyhow!("invalid API key (HTTP {status})"));
-        }
-        return Err(anyhow::anyhow!("models API returned status {status}"));
-    }
-    let body = r.json::<OpenAiModelsResp>().await?;
-
-    // For each model id, hit the CDN listing in parallel and extract quants
-    // from the actual filenames. Falls back to the API's hand-curated quants
-    // string if the CDN listing fails.
-    let mut handles: Vec<tokio::task::JoinHandle<AllowedModel>> = Vec::new();
-    for m in body.data {
-        let client = c.clone();
-        handles.push(tokio::spawn(async move {
-            let (quants_str, quant_sizes) = match cdn_quants_for(&client, &m.id).await {
-                Ok(items) if !items.is_empty() => {
-                    let mut sizes = std::collections::HashMap::new();
-                    let mut labels: Vec<String> = Vec::new();
-                    for (label, size) in items {
-                        if !labels.contains(&label) {
-                            labels.push(label.clone());
-                        }
-                        // Keep the largest size seen for a given label, in case
-                        // a model has e.g. Q4_K_M and Q4_K_M-imatrix variants.
-                        sizes.entry(label).and_modify(|v| { if size > *v { *v = size } }).or_insert(size);
-                    }
-                    labels.sort();
-                    (labels.join(", "), sizes)
-                }
-                _ => (m.quants.clone(), std::collections::HashMap::new()),
-            };
-            AllowedModel {
-                id: m.id,
-                description: m.description,
-                quants: quants_str,
-                quant_sizes,
-            }
-        }));
-    }
-    let mut out = Vec::with_capacity(handles.len());
-    for h in handles {
-        if let Ok(m) = h.await {
-            out.push(m);
-        }
-    }
-    Ok(out)
-}
-
-/// List the quant labels + on-disk file sizes (from the CDN's autoindex
-/// JSON) for a given model id by parsing GGUF filenames. Returns
-/// pairs of (quant_label, size_bytes).
-async fn cdn_quants_for(
-    c: &reqwest::Client,
-    model_id: &str,
-) -> Result<Vec<(String, u64)>, anyhow::Error> {
-    let url = format!("{LLM_FILES_BASE}/api/models/{model_id}/");
-    let r = c.get(&url).send().await?;
-    if !r.status().is_success() {
-        return Err(anyhow::anyhow!("cdn listing {} returned {}", model_id, r.status()));
-    }
-    let entries = r.json::<Vec<DirEntry>>().await?;
-    let out: Vec<(String, u64)> = entries
-        .into_iter()
-        .filter(|e| e.kind == "file" && e.name.to_lowercase().ends_with(".gguf"))
-        .filter_map(|e| extract_quant(&e.name).map(|q| (q, e.size)))
-        .collect();
-    Ok(out)
-}
 
 /// Extract the quant label out of a GGUF filename like
 /// "qwen-3.6-annihilated-Q4_K_M.gguf" -> "Q4_K_M". Returns None if no recognizable
@@ -272,6 +118,169 @@ fn extract_quant(filename: &str) -> Option<String> {
             None
         }
     }
+}
+
+// ─── HuggingFace: public model search & file listing ───────────────────────
+
+#[derive(Debug, Serialize, Clone)]
+pub struct HfSearchResult {
+    pub repo_id: String,
+    pub author: String,
+    pub model_name: String,
+    pub downloads: u64,
+    pub likes: u64,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HfApiModel {
+    #[serde(rename = "modelId", default)]
+    model_id: String,
+    #[serde(default)]
+    author: Option<String>,
+    #[serde(default)]
+    downloads: u64,
+    #[serde(default)]
+    likes: u64,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+/// Search HuggingFace for GGUF models. No auth required.
+pub async fn search_huggingface(query: &str) -> Result<Vec<HfSearchResult>, anyhow::Error> {
+    let c = http_short()?;
+    let q = query.trim();
+    let url = if q.is_empty() {
+        "https://huggingface.co/api/models?filter=gguf&sort=downloads&direction=-1&limit=50".to_string()
+    } else {
+        format!(
+            "https://huggingface.co/api/models?search={}&filter=gguf&sort=downloads&direction=-1&limit=50",
+            urlencoding::encode(q)
+        )
+    };
+    let r = c
+        .get(&url)
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    if !r.status().is_success() {
+        return Err(anyhow::anyhow!("HuggingFace API returned {}", r.status()));
+    }
+    let models = r.json::<Vec<HfApiModel>>().await?;
+    let results = models
+        .into_iter()
+        .map(|m| {
+            let parts: Vec<&str> = m.model_id.splitn(2, '/').collect();
+            let (author, model_name) = if parts.len() == 2 {
+                (parts[0].to_string(), parts[1].to_string())
+            } else {
+                (String::new(), m.model_id.clone())
+            };
+            HfSearchResult {
+                repo_id: m.model_id,
+                author: m.author.unwrap_or(author),
+                model_name,
+                downloads: m.downloads,
+                likes: m.likes,
+                tags: m.tags,
+            }
+        })
+        .collect();
+    Ok(results)
+}
+
+#[derive(Debug, Serialize, Clone)]
+pub struct HfGgufFile {
+    pub filename: String,
+    pub size: u64,
+    pub quant_label: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct HfLfsInfo {
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HfRepoSibling {
+    #[serde(rename = "rfilename")]
+    filename: String,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    lfs: Option<HfLfsInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HfRepoInfo {
+    #[serde(default)]
+    siblings: Vec<HfRepoSibling>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HfTreeItem {
+    path: String,
+    #[serde(default)]
+    size: Option<u64>,
+    #[serde(default)]
+    lfs: Option<HfLfsInfo>,
+}
+
+/// List all GGUF files in a HuggingFace repo with their sizes and quant labels.
+pub async fn list_huggingface_files(repo_id: &str) -> Result<Vec<HfGgufFile>, anyhow::Error> {
+    let c = http()?;
+    let url = format!("https://huggingface.co/api/models/{repo_id}");
+    let r = c
+        .get(&url)
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+    if !r.status().is_success() {
+        return Err(anyhow::anyhow!("HuggingFace API returned {}", r.status()));
+    }
+    let info = r.json::<HfRepoInfo>().await?;
+    let mut files: Vec<HfGgufFile> = info
+        .siblings
+        .into_iter()
+        .filter(|s| s.filename.to_lowercase().ends_with(".gguf"))
+        .map(|s| {
+            let quant = extract_quant(&s.filename).unwrap_or_else(|| "unknown".to_string());
+            let sz = s.size.or_else(|| s.lfs.as_ref().and_then(|l| l.size)).unwrap_or(0);
+            HfGgufFile {
+                filename: s.filename,
+                size: sz,
+                quant_label: quant,
+            }
+        })
+        .collect();
+
+    // If file sizes were missing in the model metadata, query the repo tree endpoint
+    if files.iter().any(|f| f.size == 0) {
+        let tree_url = format!("https://huggingface.co/api/models/{repo_id}/tree/main");
+        if let Ok(tr) = c.get(&tree_url).header("Accept", "application/json").send().await {
+            if tr.status().is_success() {
+                if let Ok(tree_items) = tr.json::<Vec<HfTreeItem>>().await {
+                    let map: std::collections::HashMap<String, u64> = tree_items
+                        .into_iter()
+                        .map(|item| {
+                            let sz = item.size.or_else(|| item.lfs.as_ref().and_then(|l| l.size)).unwrap_or(0);
+                            (item.path, sz)
+                        })
+                        .collect();
+                    for file in &mut files {
+                        if file.size == 0 {
+                            if let Some(&sz) = map.get(&file.filename) {
+                                file.size = sz;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(files)
 }
 
 // ─── Local Ollama: status + model management ──────────────────────────────
@@ -337,26 +346,44 @@ struct TagsResp {
 }
 
 /// Models actually pulled into the user's local Ollama instance.
-pub async fn list_local() -> Result<Vec<ModelInfo>, anyhow::Error> {
-    let c = http()?;
-    let r = c
-        .get(format!("{OLLAMA_BASE}/api/tags"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<TagsResp>()
-        .await?;
-    Ok(r.models)
+pub async fn list_local(app_dir: std::path::PathBuf) -> Result<Vec<ModelInfo>, anyhow::Error> {
+    let mut out: Vec<ModelInfo> = Vec::new();
+
+    // 1. Fetch Ollama models if daemon is running
+    if let Ok(c) = http() {
+        if let Ok(r) = c.get(format!("{OLLAMA_BASE}/api/tags")).send().await {
+            if r.status().is_success() {
+                if let Ok(tags) = r.json::<TagsResp>().await {
+                    out.extend(tags.models);
+                }
+            }
+        }
+    }
+
+    // 2. Scan local models folder for GGUF files
+    if let Ok(local_ggufs) = list_local_ggufs(app_dir).await {
+        for f in local_ggufs {
+            let model_name = f.name.clone();
+            if !out.iter().any(|m| m.name.eq_ignore_ascii_case(&model_name)) {
+                let quant = extract_quant(&f.name);
+                out.push(ModelInfo {
+                    name: model_name,
+                    size: f.size,
+                    modified_at: String::new(),
+                    details: Some(ModelDetails {
+                        parameter_size: None,
+                        quantization_level: quant,
+                        family: Some("GGUF".to_string()),
+                    }),
+                });
+            }
+        }
+    }
+
+    Ok(out)
 }
 
-#[derive(Deserialize)]
-struct DirEntry {
-    name: String,
-    #[serde(default)]
-    size: u64,
-    #[serde(default, rename = "type")]
-    kind: String,
-}
+
 
 /// Persisted resume metadata kept next to the partially-downloaded GGUF.
 /// On every chunk completion we rewrite this file. If the app is killed
@@ -400,9 +427,8 @@ pub struct PullProgress {
 /// to `out`: byte-progress during download, then status messages from
 /// Ollama while the model is imported.
 pub async fn pull_model(
-    name: String,
-    quant: Option<String>,
-    api_key: Option<String>,
+    repo_id: String,
+    filename: String,
     app_dir: std::path::PathBuf,
     out: Channel<PullProgress>,
     mut cancel: tokio::sync::watch::Receiver<bool>,
@@ -411,108 +437,76 @@ pub async fn pull_model(
     use std::sync::atomic::{AtomicU64, Ordering};
     use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
-    // Ollama lowercases all model names when it stores them. Normalize once
-    // here so the cloud id, local model name, and UI comparisons agree.
-    let ollama_model_name = name.to_lowercase();
+    let clean_filename = std::path::Path::new(&filename)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&filename)
+        .to_string();
 
-    // Fail fast: if the ollama daemon isn't running or the CLI isn't on PATH,
-    // there's no point starting a multi-GB download.
-    {
-        let local = local_status().await;
-        if !local.running {
-            let detail = local.error.unwrap_or_else(|| "ollama daemon not running on 127.0.0.1:11434".to_string());
-            let msg = format!(
-                "Ollama is not running. Open the Ollama app (or run `ollama serve`), then try again.\n\
-                 Detail: {detail}\n\
-                 Don't have Ollama? Run the Cerberus installer again: irm https://cerberusai.dev/get | iex"
-            );
-            let _ = out.send(PullProgress {
-                status: format!("error: {msg}"),
-                completed: None, total: None, done: true, error: Some(msg.clone()),
-                ..Default::default()
-            });
-            return Err(anyhow::anyhow!(msg));
-        }
-        if which_ollama().await.is_none() {
-            let msg = "`ollama` CLI not found on PATH. Install Ollama from https://ollama.com/download \
-                       (or re-run the Cerberus bootstrapper: irm https://cerberusai.dev/get | iex), \
-                       then open a fresh terminal so PATH refreshes.".to_string();
-            let _ = out.send(PullProgress {
-                status: format!("error: {msg}"),
-                completed: None, total: None, done: true, error: Some(msg.clone()),
-                ..Default::default()
-            });
-            return Err(anyhow::anyhow!(msg));
-        }
-    }
+    // Derive the Ollama model name from the filename (strip .gguf, lowercase).
+    let ollama_model_name = clean_filename
+        .strip_suffix(".gguf")
+        .or_else(|| clean_filename.strip_suffix(".GGUF"))
+        .unwrap_or(&clean_filename)
+        .to_lowercase();
 
     let c = http()?;
 
-    // 1. Pick the smallest .gguf in the model's directory.
+    // Construct the HuggingFace download URL.
+    let url = format!("https://huggingface.co/{repo_id}/resolve/main/{filename}");
+
+    // Get file size via GET Range: bytes=0-0 (HF LFS redirects to S3 pre-signed URLs, which fail on HEAD requests with 403).
     let _ = out.send(PullProgress {
         status: "looking up model".into(),
         completed: None, total: None, done: false, error: None,
         bytes_per_second: None, eta_seconds: None, resumed: None,
     });
-    let listing_url = format!("{LLM_FILES_BASE}/api/models/{name}/");
-    let mut listing_req = c.get(&listing_url);
-    if let Some(k) = &api_key {
-        listing_req = listing_req.header("Authorization", format!("Bearer {k}"));
+
+    let mut total: u64 = 0;
+    if let Ok(resp) = c.get(&url).header("Range", "bytes=0-0").send().await {
+        if resp.status().is_success() || resp.status().as_u16() == 206 {
+            if let Some(cr) = resp.headers().get("content-range").and_then(|v| v.to_str().ok()) {
+                if let Some(tot_str) = cr.split('/').nth(1) {
+                    total = tot_str.trim().parse::<u64>().unwrap_or(0);
+                }
+            }
+            if total == 0 {
+                total = resp
+                    .headers()
+                    .get("content-length")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(0);
+            }
+        }
     }
-    let resp = listing_req.send().await?;
-    if !resp.status().is_success() {
-        let status = resp.status();
+
+    // Fallback to HEAD request if GET range didn't yield file size
+    if total == 0 {
+        if let Ok(head_resp) = c.head(&url).send().await {
+            if head_resp.status().is_success() {
+                total = head_resp
+                    .headers()
+                    .get("content-length")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .unwrap_or(0);
+            }
+        }
+    }
+
+    if total == 0 {
+        let msg = format!("Could not determine file size for {repo_id}/{filename}");
         let _ = out.send(PullProgress {
-            status: format!("error: listing returned {status}"),
-            completed: None, total: None, done: true,
-            error: Some(format!("HTTP {status}")),
+            status: format!("error: {msg}"),
+            completed: None, total: None, done: true, error: Some(msg.clone()),
             ..Default::default()
         });
-        return Err(anyhow::anyhow!("listing HTTP {status}"));
+        return Err(anyhow::anyhow!(msg));
     }
-    let entries = resp.json::<Vec<DirEntry>>().await?;
-    
-    // Filter to .gguf files
-    let mut valid_entries: Vec<DirEntry> = entries
-        .into_iter()
-        .filter(|e| e.kind == "file" && e.name.ends_with(".gguf"))
-        .collect();
-
-    if valid_entries.is_empty() {
-        return Err(anyhow::anyhow!("no .gguf found for {name}"));
-    }
-
-    // Apply quant filter if provided
-    if let Some(q) = quant {
-        let q_lower = q.to_lowercase();
-        let matches: Vec<DirEntry> = valid_entries
-            .into_iter()
-            .filter(|e| e.name.to_lowercase().contains(&q_lower))
-            .collect();
-            
-        if matches.is_empty() {
-            let msg = format!("no .gguf matching quant '{}' found for {}", q, name);
-            let _ = out.send(PullProgress {
-                status: format!("error: {}", msg),
-                completed: None, total: None, done: true,
-                error: Some(msg.clone()),
-                ..Default::default()
-            });
-            return Err(anyhow::anyhow!(msg));
-        }
-        valid_entries = matches;
-    }
-
-    let chosen = valid_entries
-        .into_iter()
-        .min_by_key(|e| e.size)
-        .unwrap();
-
-    let total = chosen.size;
-    let url = format!("{LLM_FILES_BASE}/models/{name}/{}", chosen.name);
 
     // 2. Parallel chunked download — 8 simultaneous connections.
-    let safe_name = name.replace(['/', '\\', ':'], "_");
+    let safe_name = repo_id.replace(['/', '\\', ':'], "_");
     
     let models_dir = app_dir.join("models");
     if let Err(e) = tokio::fs::create_dir_all(&models_dir).await {
@@ -525,13 +519,10 @@ pub async fn pull_model(
         return Err(anyhow::anyhow!(msg));
     }
     
-    let temp_path = models_dir.join(format!("{safe_name}-{}", chosen.name));
+    let temp_path = models_dir.join(format!("{safe_name}-{}", clean_filename));
     let sidecar_path = temp_path.with_extension("part.json");
 
-    let mut range_check = c.get(&url).header("Range", "bytes=0-0");
-    if let Some(k) = &api_key {
-        range_check = range_check.header("Authorization", format!("Bearer {k}"));
-    }
+    let range_check = c.get(&url).header("Range", "bytes=0-0");
     let range_supported = range_check
         .send()
         .await
@@ -619,7 +610,6 @@ pub async fn pull_model(
         let dl_done = completed.clone();
         let mut dl_cancel = cancel.clone();
         let client = chunk_client.clone();
-        let auth_header = api_key.clone().map(|k| format!("Bearer {k}"));
         let sidecar = sidecar_path.clone();
         let flags = chunk_done_flags.clone();
         let total_clone = total;
@@ -627,12 +617,9 @@ pub async fn pull_model(
         let url_clone = url.clone();
 
         handles.push(tokio::spawn(async move {
-            let mut req = client
+            let req = client
                 .get(&dl_url)
                 .header("Range", format!("bytes={byte_start}-{byte_end}"));
-            if let Some(h) = &auth_header {
-                req = req.header("Authorization", h);
-            }
             let resp = req.send().await?;
             let status = resp.status();
             if status.as_u16() != 206 && !(chunk_size_clone == total_clone && status.is_success()) {
@@ -794,91 +781,66 @@ pub async fn pull_model(
         ..Default::default()
     });
 
-    // 3. Hand the GGUF to local Ollama via the CLI `ollama create` command.
+    // 3. Finalize the downloaded GGUF file.
+    //    Keep it in ~/.CerberusAI/models/ with its original filename so llama-server
+    //    can load it directly. Also attempt ollama create if Ollama is running.
+    let final_path = models_dir.join(&clean_filename);
+    if final_path != temp_path {
+        if let Err(e) = tokio::fs::rename(&temp_path, &final_path).await {
+            // rename can fail cross-device, fall back to copy+delete
+            if let Err(e2) = tokio::fs::copy(&temp_path, &final_path).await {
+                let msg = format!("Failed to finalize model file: rename={e}, copy={e2}");
+                let _ = out.send(PullProgress {
+                    status: format!("error: {msg}"),
+                    completed: None, total: None, done: true, error: Some(msg.clone()),
+                    ..Default::default()
+                });
+                return Err(anyhow::anyhow!(msg));
+            }
+            let _ = tokio::fs::remove_file(&temp_path).await;
+        }
+    }
+    let _ = tokio::fs::remove_file(&sidecar_path).await;
+
+    // On Windows, unblock file (remove Zone.Identifier stream)
+    #[cfg(windows)]
+    {
+        let zone_file = format!("{}:Zone.Identifier", final_path.display());
+        let _ = std::fs::remove_file(zone_file);
+    }
+
+    // Best-effort: if Ollama is running, register the model so it shows up there too.
     let _ = out.send(PullProgress {
-        status: "importing into ollama (this may take a minute)...".into(),
+        status: "registering model...".into(),
         completed: None, total: None, done: false, error: None,
         ..Default::default()
     });
-    
-    let modelfile_path = temp_path.with_extension("Modelfile");
-    let path_str = temp_path.to_string_lossy().replace('\\', "/");
-    
-    // Ollama automatically extracts the correct chat template and stop tokens
-    // directly from the GGUF file's metadata. Do not hardcode ChatML.
-    let modelfile_content = format!("FROM \"{}\"\n", path_str);
-    
-    if let Err(e) = tokio::fs::write(&modelfile_path, modelfile_content).await {
-        let msg = format!("failed to write Modelfile: {e}");
-        let _ = out.send(PullProgress {
-            status: format!("error: {msg}"),
-            completed: None, total: None, done: true, error: Some(msg.clone()),
-            ..Default::default()
-        });
-        return Err(anyhow::anyhow!(msg));
-    }
 
-    let child = match tokio::process::Command::new("ollama")
-        .arg("create")
-        .arg(&ollama_model_name)
-        .arg("-f")
-        .arg(&modelfile_path)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(c) => c,
-        Err(e) => {
+    if which_ollama().await.is_some() && local_status().await.running {
+        let modelfile_path = final_path.with_extension("Modelfile");
+        let path_str = final_path.to_string_lossy().replace('\\', "/");
+        let modelfile_content = format!("FROM \"{}\"\n", path_str);
+        if tokio::fs::write(&modelfile_path, modelfile_content).await.is_ok() {
+            let result = tokio::process::Command::new("ollama")
+                .arg("create")
+                .arg(&ollama_model_name)
+                .arg("-f")
+                .arg(&modelfile_path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .await;
             let _ = tokio::fs::remove_file(&modelfile_path).await;
-            let msg = format!("Failed to start `ollama` CLI: {e}. Is Ollama in your PATH?");
-            let _ = out.send(PullProgress {
-                status: format!("error: {}", msg),
-                completed: None, total: None, done: true, error: Some(msg.clone()),
-                ..Default::default()
-            });
-            return Err(anyhow::anyhow!(msg));
+            match result {
+                Ok(o) if o.status.success() => {
+                    log::info!("Model also registered in Ollama as '{}'", ollama_model_name);
+                }
+                _ => {
+                    log::warn!("Could not register in Ollama (non-fatal), model available as local GGUF");
+                }
+            }
         }
-    };
-
-    let create_output = match child.wait_with_output().await {
-        Ok(o) => o,
-        Err(e) => {
-            let _ = tokio::fs::remove_file(&modelfile_path).await;
-            let msg = format!("Failed waiting on `ollama create`: {e}");
-            let _ = out.send(PullProgress {
-                status: format!("error: {}", msg),
-                completed: None, total: None, done: true, error: Some(msg.clone()),
-                ..Default::default()
-            });
-            return Err(anyhow::anyhow!(msg));
-        }
-    };
-    let _ = tokio::fs::remove_file(&modelfile_path).await;
-
-    if !create_output.status.success() {
-        let stderr = String::from_utf8_lossy(&create_output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&create_output.stdout).trim().to_string();
-        // Surface whatever Ollama actually said. This is the difference between
-        // "didn't work" and "GGUF metadata invalid" / "permission denied" / etc.
-        let detail = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("ollama create exited with {}", create_output.status)
-        };
-        let msg = format!("ollama create failed: {detail}");
-        let _ = out.send(PullProgress {
-            status: format!("error: {msg}"),
-            completed: None, total: None, done: true, error: Some(msg.clone()),
-            ..Default::default()
-        });
-        return Err(anyhow::anyhow!(msg));
     }
-
-    // Free disk space — we no longer need the GGUF blob, Ollama has its own copy.
-    let _ = tokio::fs::remove_file(&temp_path).await;
-    let _ = tokio::fs::remove_file(&sidecar_path).await;
 
     let _ = out.send(PullProgress {
         status: "success".into(),

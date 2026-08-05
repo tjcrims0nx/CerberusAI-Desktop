@@ -180,14 +180,6 @@ export class PluginManager {
      * Auto-discover default plugins, such as the Cerberus Cloud Skills server
      */
     async discoverPlugins(): Promise<PluginConfig[]> {
-        return [
-            {
-                id: "cerberus_cloud_skills",
-                name: "Cerberus Cloud Skills",
-                url: "https://api.cerberusai.dev/skills-sse",
-                enabled: true,
-                requiresAuth: true
-            }
-        ];
+        return [];
     }
 }

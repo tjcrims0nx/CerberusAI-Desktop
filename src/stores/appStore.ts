@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import type { Chat, HardwareInfo, OllamaStatus, AllowedModel } from "../types";
+import type { Chat, HardwareInfo, OllamaStatus } from "../types";
 
 export const useAppStore = defineStore("app", () => {
   const selectedModel = ref<string>("");
@@ -22,7 +22,6 @@ export const useAppStore = defineStore("app", () => {
 
   const apiKey = ref<string>("");
   const apiKeyVerified = ref<boolean>(false);
-  const allowedModels = ref<AllowedModel[]>([]);
 
   return {
     selectedModel,
@@ -39,7 +38,6 @@ export const useAppStore = defineStore("app", () => {
     chats,
     activeId,
     apiKey,
-    apiKeyVerified,
-    allowedModels
+    apiKeyVerified
   };
 });
