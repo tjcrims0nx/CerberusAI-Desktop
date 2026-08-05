@@ -67,15 +67,6 @@ pub struct HardwareInfo {
     pub gpus: Vec<GpuInfo>,
 }
 
-// ─── Cloud (api.cerberusai.dev) ───────────────────────────────────────────
-// Only the API-key gate hits the cloud. Inference stays local.
-
-/// Verify the user's Cerberus API key against api.cerberusai.dev.
-#[tauri::command]
-async fn check_api(api_key: String) -> Result<String, String> {
-    model_manager::verify_key(&api_key).await.map_err(|e| e.to_string())
-}
-
 #[tauri::command]
 async fn search_huggingface(query: String) -> Result<Vec<model_manager::HfSearchResult>, String> {
     model_manager::search_huggingface(&query).await.map_err(|e| e.to_string())
@@ -263,6 +254,13 @@ fn detect_hardware() -> HardwareInfo {
 }
 
 #[tauri::command]
+async fn save_text_file(path: String, content: String) -> Result<(), String> {
+    tokio::fs::write(&path, content)
+        .await
+        .map_err(|e| format!("Failed to save file to {path}: {e}"))
+}
+
+#[tauri::command]
 async fn update_app(force: Option<bool>) -> Result<(), String> {
     // Re-check before spawning: if the GitHub `latest` release isn't actually newer
     // than the bundled version, refuse — otherwise the bootstrapper would happily
@@ -375,7 +373,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            check_api,
+            save_text_file,
             search_huggingface,
             list_huggingface_files,
             check_for_update,

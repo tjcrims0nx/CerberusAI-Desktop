@@ -14,17 +14,128 @@ import Models from "./components/Models.vue";
 import { PluginManager } from "./PluginManager";
 import AnimatedBackground from "./AnimatedBackground.vue";
 
-marked.setOptions({ gfm: true, breaks: true });
+function getFilenameForLang(lang: string): string {
+  const l = (lang || "").toLowerCase().trim();
+  switch (l) {
+    case "py": case "python": return "script.py";
+    case "js": case "javascript": return "script.js";
+    case "ts": case "typescript": return "script.ts";
+    case "vue": return "Component.vue";
+    case "html": case "htm": return "index.html";
+    case "css": return "style.css";
+    case "rs": case "rust": return "main.rs";
+    case "cpp": case "c++": return "main.cpp";
+    case "c": return "main.c";
+    case "json": return "data.json";
+    case "sql": return "query.sql";
+    case "ps1": case "powershell": return "script.ps1";
+    case "sh": case "bash": case "zsh": return "script.sh";
+    case "json5": case "yaml": case "yml": return "config.yaml";
+    case "md": case "markdown": return "document.md";
+    default: return "file.txt";
+  }
+}
+
+const customCodeRenderer = {
+  code({ text, lang }: { text: string; lang?: string }) {
+    const cleanLang = (lang || "code").toLowerCase();
+    const filename = getFilenameForLang(cleanLang);
+    const escapedCode = text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+
+    return `<div class="code-block-container" data-lang="${cleanLang}" data-filename="${filename}">
+  <div class="code-block-header">
+    <div class="code-block-info">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+      <span class="code-lang-tag">${cleanLang.toUpperCase()}</span>
+      <span class="code-filename-hint">${filename}</span>
+    </div>
+    <div class="code-block-actions">
+      <button type="button" class="code-btn copy-code-btn" onclick="window.__copyCodeBlock(this)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+        <span>Copy</span>
+      </button>
+      <button type="button" class="code-btn save-code-btn" onclick="window.__saveCodeBlock(this)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        <span>Download</span>
+      </button>
+    </div>
+  </div>
+  <pre><code class="language-${cleanLang}">${escapedCode}</code></pre>
+</div>`;
+  }
+};
+
+marked.use({ renderer: customCodeRenderer as any });
+
+if (typeof window !== "undefined") {
+  (window as any).__copyCodeBlock = async (btn: HTMLElement) => {
+    const container = btn.closest(".code-block-container");
+    const codeEl = container?.querySelector("code");
+    if (!codeEl) return;
+    const text = codeEl.textContent || "";
+    await navigator.clipboard.writeText(text);
+
+    const span = btn.querySelector("span");
+    if (span) {
+      const orig = span.textContent;
+      span.textContent = "Copied ✓";
+      btn.classList.add("copied");
+      setTimeout(() => {
+        span.textContent = orig;
+        btn.classList.remove("copied");
+      }, 1500);
+    }
+  };
+
+  (window as any).__saveCodeBlock = async (btn: HTMLElement) => {
+    const container = btn.closest(".code-block-container");
+    const codeEl = container?.querySelector("code");
+    if (!codeEl) return;
+    const text = codeEl.textContent || "";
+    const lang = container?.getAttribute("data-lang") || "file";
+    const defaultFilename = container?.getAttribute("data-filename") || `file.${lang}`;
+
+    try {
+      const filePath = await save({
+        defaultPath: defaultFilename,
+      });
+      if (filePath) {
+        await invoke("save_text_file", { path: filePath, content: text });
+        const span = btn.querySelector("span");
+        if (span) {
+          const orig = span.textContent;
+          span.textContent = "Saved ✓";
+          btn.classList.add("saved");
+          setTimeout(() => {
+            span.textContent = orig;
+            btn.classList.remove("saved");
+          }, 1500);
+        }
+      }
+    } catch {
+      const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = defaultFilename;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  };
+}
 
 function renderMarkdown(text: string): string {
   if (!text) return "";
   try {
     const html = marked.parse(text, { async: false }) as string;
     return DOMPurify.sanitize(html, {
-      ADD_ATTR: ["target", "rel"],
+      ADD_TAGS: ["button", "svg", "path", "polyline", "line", "rect", "circle", "span", "div"],
+      ADD_ATTR: ["target", "rel", "data-lang", "data-filename", "onclick", "class", "type", "viewBox", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "width", "height", "x", "y", "rx", "ry", "points", "x1", "y1", "x2", "y2", "d"],
     });
   } catch {
-    // Escape and return raw on any parse error
     const escaped = text
       .replace(/&/g, "&amp;")
       .replace(/</g, "&lt;")
