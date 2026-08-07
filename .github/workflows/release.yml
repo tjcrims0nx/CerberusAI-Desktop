@@ -74,6 +74,14 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Build bundled skills-server
+        # tauri.conf.json bundles ../skills-server/{dist,node_modules}/**/* as
+        # resources. Both are gitignored, so on a clean CI checkout they don't
+        # exist and `tauri build` fails with "glob pattern ... didn't match any
+        # files". Install the sub-package deps and compile it to dist/ first.
+        run: npm ci && npm run build
+        working-directory: skills-server
+
       - name: Build Tauri app (NSIS + MSI)
         run: npx tauri build
 
