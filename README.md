@@ -7,7 +7,7 @@ Local-first, 100% private desktop AI chat shell built with Tauri, Rust, Vue 3, a
 HELIX provides a standalone, private desktop chat environment. Run local GGUF models directly on your hardware without needing external cloud services, API keys, or third-party background daemons.
 
 > [!NOTE]
-> **Release Notice**: HELIX Desktop v0.6.0 is an active local-first release. If you encounter any bugs or feature requests, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/CerberusAI-Desktop/issues).
+> **Release Notice**: HELIX Desktop v0.6.0 is an active local-first release. If you encounter any bugs or feature requests, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/Helix/issues).
 
 ---
 
@@ -47,7 +47,7 @@ HELIX provides a standalone, private desktop chat environment. Run local GGUF mo
 
 ## 📦 Latest Stable Release
 
-- **Current Stable:** [v0.6.0](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases/tag/v0.6.0)
+- **Current Stable:** [v0.6.0](https://github.com/tjcrims0nx/Helix/releases/tag/v0.6.0)
 - **Windows Installer (NSIS):** `HELIX-Setup.exe`
 - **Windows Installer (MSI):** `HELIX_0.6.0_x64_en-US.msi`
 - **Checksums:** `SHA256SUMS.txt`
@@ -58,7 +58,7 @@ HELIX provides a standalone, private desktop chat environment. Run local GGUF mo
 
 ### Download & Install
 
-Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.6.0_x64_en-US.msi`) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
+Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.6.0_x64_en-US.msi`) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/Helix/releases).
 
 ---
 
@@ -136,4 +136,4 @@ npm run tauri:build
 ## 📜 License & Releases
 
 Stable releases and changelogs are published automatically at:
-[github.com/tjcrims0nx/CerberusAI-Desktop/releases](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases)
+[github.com/tjcrims0nx/Helix/releases](https://github.com/tjcrims0nx/Helix/releases)
