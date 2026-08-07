@@ -1354,6 +1354,7 @@ async function handleUpdate() {
   if (!updateInfo.value?.available) return;
   updating.value = true;
   updateProgressText.value = "DOWNLOADING...";
+  let installerLaunched = false;
 
   const onEvent = new Channel<any>();
   onEvent.onmessage = (evt) => {
@@ -1364,15 +1365,22 @@ async function handleUpdate() {
       updateProgressText.value = `${pct}% (${mb}/${totalMb} MB)`;
     } else if (evt.status) {
       updateProgressText.value = evt.status.toUpperCase();
+      if (evt.done && !evt.error) {
+        installerLaunched = true;
+      }
     }
   };
 
   try {
-    await invoke("install_update", { tag: `v${updateInfo.value.latest}`, onEvent });
+    const rawTag = updateInfo.value.latest || "";
+    const tag = rawTag.startsWith("v") ? rawTag : `v${rawTag}`;
+    await invoke("install_update", { tag, onEvent });
   } catch (e) {
-    console.error("In-app update failed, opening release URL:", e);
-    const url = (updateInfo.value as any).release_url || "https://github.com/tjcrims0nx/Helix/releases/latest";
-    await invoke("open_external_url", { url });
+    if (!installerLaunched) {
+      console.error("In-app update failed, opening release URL:", e);
+      const url = (updateInfo.value as any).release_url || "https://github.com/tjcrims0nx/Helix/releases/latest";
+      await invoke("open_external_url", { url }).catch(() => {});
+    }
   } finally {
     updating.value = false;
     updateProgressText.value = "";

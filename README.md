@@ -1,53 +1,54 @@
-# HELIX Desktop (v0.6.0)
+# HELIX Desktop (v0.6.8)
 
-Local-first, 100% private desktop AI chat shell built with Tauri, Rust, Vue 3, and native `llama.cpp` engine.
+Local-first, 100% private desktop AI chat shell built with Tauri 2, Rust, Vue 3, and native `llama.cpp` engine.
 
 HELIX provides a standalone, private desktop chat environment. Run local GGUF models directly on your hardware without needing external cloud services, API keys, or third-party background daemons.
 
 > [!NOTE]
-> **Release Notice**: HELIX Desktop v0.6.0 is an active local-first release. If you encounter any bugs or feature requests, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/Helix/issues).
+> **Release Notice**: HELIX Desktop v0.6.8 is the latest stable release. If you encounter any bugs or feature requests, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/Helix/issues).
 
 ---
 
-## ⚡ What's New in v0.6.0
+## ⚡ What's New in v0.6.8
+
+- **🛡️ Process Lifecycle & OS Error 32 Resolution**:
+  - Bound `llama-server.exe` to Tauri `RunEvent::Exit` lifecycle hooks so background engine processes exit cleanly when closing HELIX.
+  - Implemented orphan process cleanup (`kill_orphan_llama_servers`) and a handle-release delay on Windows to eliminate file lock errors (`os error 32`) during app restarts.
+  - Hardened MCP bridge subprocess stream extractions against backend thread panics.
+
+- **🎨 Model Manager & HuggingFace UI Enhancements**:
+  - Compacted card layout with dynamic grid column sizing (`minmax(185px, 1fr)`) preventing card bleeding off the right border.
+  - Fixed action button clipping on HuggingFace repository rows (`VIEW FILES ▼` / `HIDE FILES ▲`).
+  - Added horizontal scroll support (`overflow-x: auto`) and word-wrapping (`overflow-wrap: anywhere`) so long GGUF model names and quant tags remain fully visible.
 
 - **💻 Professional Code & File Creation**:
-  - Auto-generated language tags (`PYTHON`, `TYPESCRIPT`, `RUST`, `HTML`, `CSS`, `VUE`, `JSON`, `POWERSHELL`, `SQL`, `BASH`) and file extension suggestions (`script.py`, `Component.vue`, `index.html`).
+  - Auto-generated language tags (`PYTHON`, `TYPESCRIPT`, `RUST`, `HTML`, `CSS`, `VUE`, `JSON`, `POWERSHELL`, `SQL`, `BASH`) and file extension suggestions.
   - One-click **Copy** button on code blocks with animated feedback (`Copied ✓`).
-  - One-click **Download / Save File** button prompting native Windows File Save Dialog via Tauri (`save_text_file`) or instant blob download.
+  - One-click **Download / Save File** button prompting native Windows File Save Dialog via Tauri (`save_text_file`).
 
 - **🔌 In-Chat `/mcp` Slash Commands & Composer Menu**:
   - `/mcp list`: Live status overview of all configured MCP plugins, connection state (🟢 Connected / 🔴 Offline), and endpoints.
   - `/mcp enable <id>` & `/mcp disable <id>`: Activate or deactivate plugins directly inside chat prompts.
   - `/mcp open`: Instantly open the Plugin Manager modal.
-  - Quick **MCP Plugins** launcher added inside the composer `+` Attach Menu.
 
 - **🌐 Dual Stdio & SSE MCP Plugin Support**:
   - Command-based (`stdio`) and URL-based (`SSE`) MCP plugin forms with live toggle tabs in the Plugin Manager.
-  - Real-time **Connected / Offline** badge sync linked directly to active sidecar processes.
-  - Isolated plugin startup error handling so one failing plugin does not block others.
-
-- **📋 Universal Message Copying**:
-  - One-click Copy buttons added to **both User prompts and Assistant responses**.
-
-- **🎨 Dark Metallic Glass Design**:
-  - Standardized Windows 11 Fluent Glassmorphism with Acrylic/Mica glass visual hierarchy across sidebars, action cards, model manager, and chat bubbles.
-  - Persistent welcome dashboard retaining quick suggestion chips on empty chats.
+  - Real-time **Connected / Offline** status badges linked directly to active sidecar processes.
 
 - **⚡ Standalone Native `llama-server` Engine**:
-  - Built-in `llama.cpp` integration with Vulkan GPU acceleration and FlashAttention (`-fa auto`) for 3x faster prompt processing. Zero setup required.
+  - Built-in `llama.cpp` integration with Vulkan GPU acceleration and FlashAttention (`-fa auto`) for fast prompt processing.
 
 - **📦 HuggingFace GGUF Search & Parallel Chunk Downloads**:
   - Direct search for open-source GGUF models on HuggingFace.
-  - Multi-threaded 8-stream parallel downloads with resume support and accurate LFS file size metadata (`💾 4.2 GB`, `💾 8.5 GB`).
+  - Multi-threaded 8-stream parallel downloads with resume support and accurate file size metadata.
 
 ---
 
 ## 📦 Latest Stable Release
 
-- **Current Stable:** [v0.6.0](https://github.com/tjcrims0nx/Helix/releases/tag/v0.6.0)
+- **Current Stable:** [v0.6.8](https://github.com/tjcrims0nx/Helix/releases/tag/v0.6.8)
 - **Windows Installer (NSIS):** `HELIX-Setup.exe`
-- **Windows Installer (MSI):** `HELIX_0.6.0_x64_en-US.msi`
+- **Windows Installer (MSI):** `HELIX_0.6.8_x64_en-US.msi`
 - **Checksums:** `SHA256SUMS.txt`
 
 ---
@@ -56,7 +57,7 @@ HELIX provides a standalone, private desktop chat environment. Run local GGUF mo
 
 ### Download & Install
 
-Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.6.0_x64_en-US.msi`) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/Helix/releases).
+Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.6.8_x64_en-US.msi`) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/Helix/releases/tag/v0.6.8).
 
 ---
 

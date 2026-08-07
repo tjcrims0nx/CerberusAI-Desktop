@@ -258,6 +258,7 @@ pub async fn download_and_install_update(
         std::process::Command::new(&installer_path).spawn()?;
     }
 
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     std::process::exit(0);
 }
 
