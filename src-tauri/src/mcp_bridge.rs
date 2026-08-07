@@ -92,7 +92,7 @@ pub async fn load_mcp_config(path: String) -> Result<Vec<DiscoveredPlugin>, Stri
     for (name, server_config) in config.mcp_servers {
         plugins.push(DiscoveredPlugin {
             id: format!("mcp_{}", name),
-            name: name,
+            name,
             command: server_config.command,
             args: server_config.args,
             env: server_config.env,
@@ -294,7 +294,7 @@ fn parse_api_skills_value(value: &serde_json::Value, out: &mut Vec<AwesomeSkill>
     };
 
     if let Some(url) = github_url_from_value(value) {
-        let fallback_name = url.split('/').filter(|part| !part.is_empty()).last().unwrap_or(&url);
+        let fallback_name = url.split('/').rfind(|part| !part.is_empty()).unwrap_or(&url);
         out.push(AwesomeSkill {
             name: json_text(value, &["name", "title", "displayName"]).trim().to_string().if_empty(fallback_name),
             description: json_text(value, &["description", "summary", "excerpt", "readme"]).trim().to_string(),
@@ -396,7 +396,7 @@ fn parse_awesome_skills(html: &str) -> Vec<AwesomeSkill> {
     let mut seen: HashSet<String> = skills.iter().map(|s| s.url.clone()).collect();
     for url in github_urls(html) {
         if seen.insert(url.clone()) {
-            let repo = url.split('/').filter(|part| !part.is_empty()).last().unwrap_or(&url);
+            let repo = url.split('/').rfind(|part| !part.is_empty()).unwrap_or(&url);
             skills.push(AwesomeSkill {
                 name: repo.replace(['-', '_'], " "),
                 description: "MCP plugin or SKILL.md repo from awesome-skills.com.".into(),

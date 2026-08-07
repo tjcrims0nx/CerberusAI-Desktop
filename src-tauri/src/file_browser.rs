@@ -276,7 +276,7 @@ fn blob_path_for(id: &str, ext: &str) -> Result<PathBuf, String> {
 #[tauri::command]
 pub async fn library_list() -> Result<Vec<LibraryItem>, String> {
     let mut items = read_index().await?;
-    items.sort_by(|a, b| b.added_at.cmp(&a.added_at));
+    items.sort_by_key(|b| std::cmp::Reverse(b.added_at));
     Ok(items)
 }
 

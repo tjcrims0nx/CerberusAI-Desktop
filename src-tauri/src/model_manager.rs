@@ -526,7 +526,7 @@ pub async fn pull_model(
         .map(|resp| resp.status().as_u16() == 206)
         .unwrap_or(false);
     let chunks: u64 = if range_supported { 8 } else { 1 };
-    let chunk_size = (total + chunks - 1) / chunks;
+    let chunk_size = total.div_ceil(chunks);
 
     // Resume support — if a sidecar matches this URL & total, reuse the file
     // and skip already-completed chunks. Otherwise start fresh.
@@ -1026,8 +1026,7 @@ pub async fn stream_chat_local(
             Ok(Some(Err(e))) => return Err(e.into()),
             Ok(Some(Ok(bytes))) => {
                 buf.extend_from_slice(&bytes);
-                loop {
-                    let Some(nl) = buf.iter().position(|b| *b == b'\n') else { break };
+                while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=nl).collect();
                     // Strip trailing \n and \r (handle both LF and CRLF)
                     let mut end = line.len();
@@ -1230,12 +1229,12 @@ pub async fn import_local_gguf(
     let dest_path = models_dir.join(filename);
 
     // Move the file into the managed models directory if it's not already there
-    if src.canonicalize().unwrap_or_default() != dest_path.canonicalize().unwrap_or_default() {
-        if let Err(_) = tokio::fs::rename(src, &dest_path).await {
-            // Fallback to copy+delete if rename fails (e.g., cross-drive move)
-            tokio::fs::copy(src, &dest_path).await?;
-            tokio::fs::remove_file(src).await?;
-        }
+    if src.canonicalize().unwrap_or_default() != dest_path.canonicalize().unwrap_or_default()
+        && tokio::fs::rename(src, &dest_path).await.is_err()
+    {
+        // Fallback to copy+delete if rename fails (e.g., cross-drive move)
+        tokio::fs::copy(src, &dest_path).await?;
+        tokio::fs::remove_file(src).await?;
     }
 
     // Normalise the path for the Modelfile
