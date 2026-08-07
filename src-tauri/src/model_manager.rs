@@ -122,6 +122,145 @@ fn is_version_newer(latest: &str, current: &str) -> bool {
     l > c
 }
 
+#[derive(Debug, Serialize, Clone)]
+pub struct UpdateProgress {
+    pub status: String,
+    pub completed: Option<u64>,
+    pub total: Option<u64>,
+    pub done: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubReleaseInfo {
+    assets: Vec<GitHubAssetInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubAssetInfo {
+    name: String,
+    browser_download_url: String,
+}
+
+pub async fn download_and_install_update(
+    tag: String,
+    out: tauri::ipc::Channel<UpdateProgress>,
+) -> Result<(), anyhow::Error> {
+    use tokio::io::AsyncWriteExt;
+    use futures_util::StreamExt;
+
+    let tag_clean = if tag.starts_with('v') { tag } else { format!("v{tag}") };
+    let client = http()?;
+
+    let _ = out.send(UpdateProgress {
+        status: format!("Checking release assets for {tag_clean}..."),
+        completed: None,
+        total: None,
+        done: false,
+        error: None,
+    });
+
+    let url = format!("https://api.github.com/repos/tjcrims0nx/Helix/releases/tags/{tag_clean}");
+    let resp = client
+        .get(&url)
+        .header("User-Agent", "HELIX-Desktop-App")
+        .header("Accept", "application/json")
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        let msg = format!("Failed to fetch release details for {tag_clean}: HTTP {}", resp.status());
+        let _ = out.send(UpdateProgress {
+            status: format!("error: {msg}"),
+            completed: None, total: None, done: true, error: Some(msg.clone()),
+        });
+        return Err(anyhow::anyhow!(msg));
+    }
+
+    let rel_info = resp.json::<GitHubReleaseInfo>().await?;
+
+    let asset = rel_info
+        .assets
+        .into_iter()
+        .find(|a| a.name.ends_with(".exe") || a.name.ends_with(".msi"))
+        .ok_or_else(|| anyhow::anyhow!("No installer file (.exe or .msi) found in release assets for {tag_clean}"))?;
+
+    let _ = out.send(UpdateProgress {
+        status: format!("Connecting to download {}...", asset.name),
+        completed: Some(0),
+        total: None,
+        done: false,
+        error: None,
+    });
+
+    let download_resp = client
+        .get(&asset.browser_download_url)
+        .header("User-Agent", "HELIX-Desktop-App")
+        .send()
+        .await?;
+
+    if !download_resp.status().is_success() {
+        let msg = format!("Failed to download {}: HTTP {}", asset.name, download_resp.status());
+        let _ = out.send(UpdateProgress {
+            status: format!("error: {msg}"),
+            completed: None, total: None, done: true, error: Some(msg.clone()),
+        });
+        return Err(anyhow::anyhow!(msg));
+    }
+
+    let total_bytes = download_resp.content_length().unwrap_or(0);
+    let temp_dir = std::env::temp_dir();
+    let installer_path = temp_dir.join(&asset.name);
+
+    let mut file = tokio::fs::File::create(&installer_path).await?;
+    let mut downloaded: u64 = 0;
+    let mut stream = download_resp.bytes_stream();
+
+    while let Some(chunk_res) = stream.next().await {
+        let chunk = chunk_res?;
+        file.write_all(&chunk).await?;
+        downloaded += chunk.len() as u64;
+
+        let _ = out.send(UpdateProgress {
+            status: format!("Downloading {}...", asset.name),
+            completed: Some(downloaded),
+            total: if total_bytes > 0 { Some(total_bytes) } else { None },
+            done: false,
+            error: None,
+        });
+    }
+
+    file.flush().await?;
+    drop(file);
+
+    let _ = out.send(UpdateProgress {
+        status: "Launching installer...".into(),
+        completed: Some(downloaded),
+        total: if total_bytes > 0 { Some(total_bytes) } else { None },
+        done: true,
+        error: None,
+    });
+
+    #[cfg(target_os = "windows")]
+    {
+        if asset.name.ends_with(".msi") {
+            std::process::Command::new("msiexec")
+                .args(["/i", &installer_path.to_string_lossy(), "/passive"])
+                .spawn()?;
+        } else {
+            std::process::Command::new(&installer_path)
+                .spawn()?;
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new(&installer_path).spawn()?;
+    }
+
+    std::process::exit(0);
+}
+
 // ─── Cloud: GitHub release-based update check ──────────────────────────────
 
 

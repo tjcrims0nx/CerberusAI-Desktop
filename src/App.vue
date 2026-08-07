@@ -255,6 +255,7 @@ async function handleFileSelect(e: Event) {
 
 const streamingContent = ref<string>("");
 const updating = ref<boolean>(false);
+const updateProgressText = ref<string>("");
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
 const appVersion = ref<string>("0.1.0");
 const messagesEl = ref<HTMLElement | null>(null);
@@ -1258,14 +1259,29 @@ async function handleUpdate() {
   if (updating.value) return;
   if (!updateInfo.value?.available) return;
   updating.value = true;
+  updateProgressText.value = "DOWNLOADING...";
+
+  const onEvent = new Channel<any>();
+  onEvent.onmessage = (evt) => {
+    if (evt.completed && evt.total) {
+      const pct = Math.round((evt.completed / evt.total) * 100);
+      const mb = (evt.completed / (1024 * 1024)).toFixed(1);
+      const totalMb = (evt.total / (1024 * 1024)).toFixed(1);
+      updateProgressText.value = `${pct}% (${mb}/${totalMb} MB)`;
+    } else if (evt.status) {
+      updateProgressText.value = evt.status.toUpperCase();
+    }
+  };
+
   try {
+    await invoke("install_update", { tag: `v${updateInfo.value.latest}`, onEvent });
+  } catch (e) {
+    console.error("In-app update failed, opening release URL:", e);
     const url = (updateInfo.value as any).release_url || "https://github.com/tjcrims0nx/Helix/releases/latest";
     await invoke("open_external_url", { url });
-  } catch (e) {
-    console.error("Update failed", e);
-    alert(`Could not open release page: ${e}`);
   } finally {
     updating.value = false;
+    updateProgressText.value = "";
   }
 }
 
@@ -1514,7 +1530,7 @@ onMounted(async () => {
           style="position: relative;"
         >
           <span v-if="updateInfo?.available && !updating" class="update-badge-dot"></span>
-          <span v-if="updating">UPDATING...</span>
+          <span v-if="updating">{{ updateProgressText || 'UPDATING...' }}</span>
           <template v-else-if="updateInfo?.available">
             🚀 UPDATE TO v{{ updateInfo.latest }}
           </template>

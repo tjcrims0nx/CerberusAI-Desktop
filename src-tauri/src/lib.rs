@@ -90,6 +90,16 @@ async fn check_for_update() -> Result<model_manager::UpdateInfo, String> {
 }
 
 #[tauri::command]
+async fn install_update(
+    tag: String,
+    on_event: tauri::ipc::Channel<model_manager::UpdateProgress>,
+) -> Result<(), String> {
+    model_manager::download_and_install_update(tag, on_event)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn open_external_url(url: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -418,6 +428,7 @@ pub fn run() {
             search_huggingface,
             list_huggingface_files,
             check_for_update,
+            install_update,
             check_local_ollama,
             list_models,
             pull_model,
