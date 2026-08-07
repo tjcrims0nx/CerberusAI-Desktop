@@ -89,6 +89,32 @@ async fn check_for_update() -> Result<model_manager::UpdateInfo, String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn open_external_url(url: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 // ─── Local Ollama ─────────────────────────────────────────────────────────
 
 /// Returns local Ollama daemon status (running + version, or error).
@@ -388,6 +414,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             save_text_file,
+            open_external_url,
             search_huggingface,
             list_huggingface_files,
             check_for_update,

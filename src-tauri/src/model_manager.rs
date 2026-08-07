@@ -64,19 +64,62 @@ async fn which_ollama() -> Option<std::path::PathBuf> {
     None
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UpdateInfo {
     pub current: String,
     pub latest: String,
     pub available: bool,
+    pub release_url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GitHubReleaseTag {
+    tag_name: String,
+    html_url: String,
 }
 
 pub async fn check_update(current: &str) -> Result<UpdateInfo, anyhow::Error> {
+    let client = http()?;
+    let resp = client
+        .get("https://api.github.com/repos/tjcrims0nx/Helix/releases/latest")
+        .header("User-Agent", "HELIX-Desktop-App")
+        .header("Accept", "application/json")
+        .send()
+        .await;
+
+    let (latest_tag, release_url) = match resp {
+        Ok(r) if r.status().is_success() => {
+            if let Ok(rel) = r.json::<GitHubReleaseTag>().await {
+                (rel.tag_name, rel.html_url)
+            } else {
+                (format!("v{current}"), "https://github.com/tjcrims0nx/Helix/releases/latest".to_string())
+            }
+        }
+        _ => (format!("v{current}"), "https://github.com/tjcrims0nx/Helix/releases/latest".to_string()),
+    };
+
+    let latest_clean = latest_tag.trim_start_matches('v').trim().to_string();
+    let current_clean = current.trim_start_matches('v').trim().to_string();
+
+    let available = is_version_newer(&latest_clean, &current_clean);
+
     Ok(UpdateInfo {
-        current: current.to_string(),
-        latest: current.to_string(),
-        available: false,
+        current: current_clean,
+        latest: latest_clean,
+        available,
+        release_url,
     })
+}
+
+fn is_version_newer(latest: &str, current: &str) -> bool {
+    let parse_ver = |v: &str| -> Vec<u64> {
+        v.split('.')
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect()
+    };
+    let l = parse_ver(latest);
+    let c = parse_ver(current);
+    l > c
 }
 
 // ─── Cloud: GitHub release-based update check ──────────────────────────────

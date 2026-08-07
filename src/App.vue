@@ -1259,10 +1259,11 @@ async function handleUpdate() {
   if (!updateInfo.value?.available) return;
   updating.value = true;
   try {
-    await invoke("update_app");
+    const url = (updateInfo.value as any).release_url || "https://github.com/tjcrims0nx/Helix/releases/latest";
+    await invoke("open_external_url", { url });
   } catch (e) {
     console.error("Update failed", e);
-    alert(`Update failed: ${e}`);
+    alert(`Could not open release page: ${e}`);
   } finally {
     updating.value = false;
   }
@@ -1510,11 +1511,12 @@ onMounted(async () => {
           :class="{ 'update-btn-available': updateInfo?.available && !updating }"
           @click="handleUpdate"
           :disabled="updating || !updateInfo?.available"
+          style="position: relative;"
         >
+          <span v-if="updateInfo?.available && !updating" class="update-badge-dot"></span>
           <span v-if="updating">UPDATING...</span>
           <template v-else-if="updateInfo?.available">
-            <span class="update-dot"></span>
-            UPDATE TO v{{ updateInfo.latest }}
+            🚀 UPDATE TO v{{ updateInfo.latest }}
           </template>
           <span v-else-if="updateInfo">v{{ updateInfo.current }} · LATEST</span>
           <span v-else>CHECKING…</span>
@@ -1762,15 +1764,60 @@ onMounted(async () => {
 }
 
 .update-btn-available {
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.8), rgba(185, 28, 28, 0.9)) !important;
-  border-color: rgba(239, 68, 68, 0.5) !important;
+  background: linear-gradient(135deg, rgba(147, 51, 234, 0.7), rgba(88, 28, 135, 0.9)) !important;
+  border-color: rgba(168, 85, 247, 0.6) !important;
   color: #fff !important;
-  box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3);
-  animation: update-pulse 2.4s infinite ease-in-out;
+  box-shadow:
+    0 4px 20px rgba(147, 51, 234, 0.4),
+    0 0 30px rgba(168, 85, 247, 0.15),
+    inset 0 1px 2px rgba(255, 255, 255, 0.15);
+  animation: update-glow-pulse 2.4s infinite ease-in-out;
+  cursor: pointer !important;
 }
-@keyframes update-pulse {
-  0%, 100% { box-shadow: 0 4px 15px rgba(239, 68, 68, 0.3); }
-  50% { box-shadow: 0 4px 25px rgba(239, 68, 68, 0.6); }
+.update-btn-available:hover {
+  background: linear-gradient(135deg, rgba(168, 85, 247, 0.85), rgba(107, 33, 168, 0.95)) !important;
+  box-shadow:
+    0 6px 30px rgba(147, 51, 234, 0.6),
+    0 0 50px rgba(168, 85, 247, 0.25),
+    inset 0 1px 2px rgba(255, 255, 255, 0.2);
+}
+@keyframes update-glow-pulse {
+  0%, 100% {
+    box-shadow:
+      0 4px 20px rgba(147, 51, 234, 0.4),
+      0 0 30px rgba(168, 85, 247, 0.15),
+      inset 0 1px 2px rgba(255, 255, 255, 0.15);
+  }
+  50% {
+    box-shadow:
+      0 4px 30px rgba(147, 51, 234, 0.7),
+      0 0 50px rgba(168, 85, 247, 0.3),
+      inset 0 1px 2px rgba(255, 255, 255, 0.2);
+  }
+}
+.update-badge-dot {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 12px;
+  height: 12px;
+  background: radial-gradient(circle, #c084fc 0%, #a855f7 50%, #7c3aed 100%);
+  border-radius: 50%;
+  border: 2px solid rgba(15, 10, 25, 0.8);
+  box-shadow: 0 0 8px rgba(168, 85, 247, 0.8), 0 0 16px rgba(147, 51, 234, 0.4);
+  animation: dot-pulse 1.8s infinite ease-in-out;
+  z-index: 10;
+  pointer-events: none;
+}
+@keyframes dot-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 0 8px rgba(168, 85, 247, 0.8), 0 0 16px rgba(147, 51, 234, 0.4);
+  }
+  50% {
+    transform: scale(1.25);
+    box-shadow: 0 0 14px rgba(168, 85, 247, 1), 0 0 28px rgba(147, 51, 234, 0.6);
+  }
 }
 
 /* ─── Model Manager Panel (LM Studio-style) ──────────────────────────── */
