@@ -1,13 +1,13 @@
 [package]
-name = "cerberus-desktop"
-version = "0.5.0"
-description = "Cerberus AI — local-first chat dashboard"
-authors = ["CerberusAI"]
+name = "helix-desktop"
+version = "0.6.0"
+description = "HELIX — local-first chat dashboard"
+authors = ["HELIX"]
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "cerberus_desktop_lib"
+name = "helix_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -23,30 +23,57 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "str
 futures-util = "0.3"
 sysinfo = "0.38"
 log = "0.4"
+# Without a backend registered, every `log::` macro in this crate is a silent
+# no-op — which is how the storage failures below went unnoticed.
+tauri-plugin-log = "2"
 anyhow = "1"
 tauri-plugin-dialog = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 aes-gcm = "0.10.3"
 rand = "0.9.4"
-keyring = "3.6.3"
+# Platform credential-store backends are opt-in features. With none enabled,
+# keyring silently falls back to an in-memory *mock* store that accepts writes
+# and returns NoEntry on every read — so the AES master key was regenerated on
+# each launch and nothing in helix.db was ever readable again. The native
+# backend for each target is selected below.
+keyring = { version = "3.6.3", default-features = false }
 hex = "0.4.3"
+base64 = "0.22"
 zip = { version = "6", default-features = false, features = ["deflate"] }
 urlencoding = "2.1.3"
 window-vibrancy = "0.8.0"
 
 [target.'cfg(windows)'.dependencies]
+keyring = { version = "3.6.3", features = ["windows-native"] }
 windows = { version = "0.62", features = [
   "Win32_Foundation",
   "Win32_Graphics_Dxgi",
   "Win32_Graphics_Dxgi_Common",
+  "Win32_System_Performance",
 ] }
+# In-app browser text extraction goes through WebView2's ExecuteScript. The COM
+# handler's PCWSTR / Result types are generated against `windows` 0.61 (what
+# webview2-com-sys 0.38.2 pins), so this MUST stay at 0.61 even though the block
+# above uses 0.62 for DXGI — the two coexist under different local names.
+webview2-com = "0.38"
+windows061 = { package = "windows", version = "0.61", default-features = false }
+# Window screenshot capture for the in-app browser (PrintWindow/GDI under the hood).
+xcap = "0.9"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
 ] }
 winreg = "0.55"
 dirs = "6"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3.6.3", features = ["apple-native"] }
+
+# Linux has no single credential store; keyutils is kernel-backed but does not
+# survive a reboot, so it is paired with the Secret Service for persistence.
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", features = ["linux-native-sync-persistent", "crypto-rust"] }
 
 [target.'cfg(not(windows))'.dependencies]
 dirs = "6"

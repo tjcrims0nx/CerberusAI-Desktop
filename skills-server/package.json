@@ -1,11 +1,11 @@
 {
-  "name": "cerberus-skills",
+  "name": "helix-skills",
   "version": "1.0.0",
-  "description": "MCP skills server for CerberusAI-Desktop — exposes filesystem and shell tools to local Ollama models",
+  "description": "MCP skills server for HELIX-Desktop — exposes filesystem and shell tools to local Ollama models",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "cerberus-skills": "dist/index.js"
+    "helix-skills": "dist/index.js"
   },
   "scripts": {
     "build": "tsc",
@@ -17,7 +17,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "express": "^4.21.0",
-    "puppeteer": "^25.0.4",
     "zod": "^3.23.8"
   },
   "devDependencies": {

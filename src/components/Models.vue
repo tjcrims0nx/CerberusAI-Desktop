@@ -83,7 +83,7 @@
         </div>
 
         <p class="manager-hint">
-          Local GGUF models stored in <code>~/.CerberusAI/models/</code>. Executed directly by the built-in llama engine.
+          Local GGUF models stored in <code>~/.HELIX/models/</code>. Executed directly by the built-in llama engine.
         </p>
 
         <div v-if="filteredGgufs.length === 0" class="manager-empty">

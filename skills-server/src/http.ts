@@ -12,7 +12,7 @@ app.use(express.json());
 
 const server = new Server(
   {
-    name: "cerberus-skills-http",
+    name: "helix-skills-http",
     version: "1.0.0",
   },
   {
@@ -57,7 +57,7 @@ app.post("/message", async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, async () => {
   await pluginManager.init();
-  console.log(`Cerberus Skills HTTP Server running on port ${PORT}`);
+  console.log(`HELIX Skills HTTP Server running on port ${PORT}`);
   console.log(`SSE endpoint: http://localhost:${PORT}/sse`);
   console.log(`Message endpoint: http://localhost:${PORT}/message`);
 });

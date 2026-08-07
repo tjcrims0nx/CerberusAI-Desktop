@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════════════
-   🌑 CERBERUS AI - DARK LIQUID METAL & PRISM DESIGN SYSTEM
+   🌑 HELIX - DARK LIQUID METAL & PRISM DESIGN SYSTEM
    ═══════════════════════════════════════════════════════════════════════════ */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300..900&family=JetBrains+Mono:wght@400;500;700;800;900&display=swap');
@@ -405,6 +405,136 @@ a:hover { color: #d8b4fe; }
 }
 @keyframes thinking-pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
 
+/* Tool calls requested by an assistant turn */
+.tool-call-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tool-call-list:not(:last-child) { margin-bottom: 0.6rem; }
+.tool-call-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(168, 85, 247, 0.35);
+  background: rgba(168, 85, 247, 0.12);
+  color: #d8b4fe;
+  font-size: 0.75rem;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+/* Tool approval gate — shown before any side-effecting MCP tool runs.
+   Above every other overlay so a pending call can never be obscured. */
+.approval-overlay {
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(24px) saturate(1.4);
+}
+
+.approval-panel {
+  width: min(560px, 92vw);
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  padding: 1.5rem;
+  border-radius: 16px;
+  background: #1c1c1e;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6);
+}
+
+.approval-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+}
+
+.approval-icon {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.32);
+  background: rgba(251, 191, 36, 0.12);
+}
+
+.approval-title {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.94);
+}
+
+.approval-subtitle {
+  margin: 0.2rem 0 0;
+  font-size: 0.84rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.approval-subtitle code {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  color: #d8b4fe;
+}
+
+.approval-detail {
+  margin: 0;
+  padding: 0.85rem 0.95rem;
+  overflow: auto;
+  max-height: 42vh;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.86);
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.approval-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+.approval-actions button {
+  padding: 0.5rem 1.15rem;
+  border-radius: 8px;
+  font-size: 0.86rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.approval-deny {
+  color: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.approval-deny:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: #fff;
+}
+
+.approval-allow {
+  color: #fff;
+  background: linear-gradient(135deg, rgba(52, 211, 153, 0.9), rgba(5, 150, 105, 0.9));
+  border: 1px solid rgba(52, 211, 153, 0.4);
+}
+
+.approval-allow:hover {
+  filter: brightness(1.1);
+}
+
 /* Modals — Fluent Acrylic panels */
 .manager-panel {
   width: 94%;
@@ -505,6 +635,18 @@ a:hover { color: #d8b4fe; }
   color: #fff;
   font-weight: 900;
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+}
+
+.brand-logo-img {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  object-fit: contain;
+  display: block;
+  background: linear-gradient(135deg, #12071f 0%, #000000 100%);
+  border: 1px solid rgba(255,255,255,0.05);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
+  filter: drop-shadow(0 0 8px rgba(168,85,247,0.4));
 }
 
 .brand-name {
@@ -701,6 +843,11 @@ a:hover { color: #d8b4fe; }
   padding: 0 0.25rem 0 0.1rem;
   color: rgba(255, 255, 255, 0.52);
   font-size: 0.76rem;
+}
+
+.response-actions.user-actions {
+  justify-content: flex-end;
+  margin-top: 4px;
 }
 
 .copy-response-btn {

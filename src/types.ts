@@ -76,6 +76,18 @@ export interface HardwareInfo {
   gpus: GpuInfo[];
 }
 
+/** Live utilization snapshot from the `sample_usage` command. VRAM fields are
+ * null when the platform can't report it. */
+export interface UsageSample {
+  cpu_pct: number;
+  ram_pct: number;
+  ram_used_mb: number;
+  ram_total_mb: number;
+  vram_pct: number | null;
+  vram_used_mb: number | null;
+  vram_total_mb: number | null;
+}
+
 export type OllamaStatus =
   | { kind: "checking" }
   | { kind: "ok"; version: string }

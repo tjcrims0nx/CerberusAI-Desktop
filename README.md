@@ -1,13 +1,13 @@
-# Cerberus AI Desktop (v0.5.0)
+# HELIX Desktop (v0.5.0)
 
 Local-first, independent desktop AI chat shell built with Tauri, Rust, Vue 3, and native `llama.cpp` engine.
 
-![Cerberus chat dashboard](assets/readme/chat-dashboard.png)
+![HELIX chat dashboard](assets/readme/chat-dashboard.png)
 
-Cerberus AI provides a 100% private, standalone desktop chat environment. Run local GGUF models directly on your hardware without needing external services, cloud API keys, or third-party background daemons.
+HELIX provides a 100% private, standalone desktop chat environment. Run local GGUF models directly on your hardware without needing external services, cloud API keys, or third-party background daemons.
 
 > [!WARNING]
-> **Beta Release Notice**: Cerberus AI Desktop v0.5.0 is currently in active Beta. Some features may experience intermittent issues. If you encounter any bugs, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/CerberusAI-Desktop/issues) so they can be reviewed and resolved.
+> **Beta Release Notice**: HELIX Desktop v0.5.0 is currently in active Beta. Some features may experience intermittent issues. If you encounter any bugs, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/CerberusAI-Desktop/issues) so they can be reviewed and resolved.
 
 ---
 
@@ -26,8 +26,8 @@ Cerberus AI provides a 100% private, standalone desktop chat environment. Run lo
 ## 📦 Latest Stable Release
 
 - **Current Stable:** [v0.5.0](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases/tag/v0.5.0)
-- **Windows Installer (NSIS):** `Cerberus-Setup.exe`
-- **Windows Installer (MSI):** `Cerberus_0.5.0_x64_en-US.msi`
+- **Windows Installer (NSIS):** `HELIX-Setup.exe`
+- **Windows Installer (MSI):** `HELIX_0.5.0_x64_en-US.msi`
 - **Checksums:** `SHA256SUMS.txt`
 
 ---
@@ -36,20 +36,20 @@ Cerberus AI provides a 100% private, standalone desktop chat environment. Run lo
 
 ### Download & Install
 
-Download the latest installer (`Cerberus-Setup.exe` or `Cerberus_0.5.0_x64_en-US.msi`) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
+Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.5.0_x64_en-US.msi`) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
 
 ---
 
 ## 🖼️ Interface Showcase
 
 ### Chat Dashboard
-![Cerberus chat dashboard](assets/readme/chat-dashboard.png)
+![HELIX chat dashboard](assets/readme/chat-dashboard.png)
 
 ### Model Manager & HuggingFace Pulls
-![Cerberus model manager](assets/readme/model-manager.png)
+![HELIX model manager](assets/readme/model-manager.png)
 
 ### MCP Plugin Manager
-![Cerberus MCP plugins](assets/readme/mcp-plugins.png)
+![HELIX MCP plugins](assets/readme/mcp-plugins.png)
 
 ---
 

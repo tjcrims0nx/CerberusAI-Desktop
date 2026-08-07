@@ -12,7 +12,7 @@ except ImportError:
     # Fallback/mock for when the environment is building
     AutoModel = None
 
-app = FastAPI(title="Cerberus AirLLM Sidecar")
+app = FastAPI(title="HELIX AirLLM Sidecar")
 
 class ChatMessage(BaseModel):
     role: str
@@ -35,7 +35,7 @@ async def chat_completions(req: ChatRequest):
     if AutoModel is None:
         raise HTTPException(status_code=500, detail="airllm is not installed in the sidecar environment.")
 
-    model_path = req.model # In Cerberus, the frontend passes the path to the model
+    model_path = req.model # In HELIX, the frontend passes the path to the model
 
     if _current_model_path != model_path:
         # Load new model (AirLLM automatically offloads layer by layer from disk)

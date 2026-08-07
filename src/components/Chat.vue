@@ -1,9 +1,9 @@
 <template>
   <div class="chat-component" @click="handleChatClick">
+    <template v-for="(m, i) in activeChat.messages" :key="i">
     <div
+      v-if="isVisible(m, i)"
       class="msg-row"
-      v-for="(m, i) in activeChat.messages"
-      :key="i"
       :class="{ 'user-row': m.role === 'user' }"
     >
       <div v-if="m.role === 'assistant'" class="msg-avatar">
@@ -15,7 +15,15 @@
             <img v-for="(img, idx) in m.images" :key="idx" :src="'data:image/jpeg;base64,' + img" class="msg-img" />
           </div>
 
+          <div v-if="m.tool_calls && m.tool_calls.length" class="tool-call-list">
+            <span v-for="(tc, ti) in m.tool_calls" :key="ti" class="tool-call-chip">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
+              {{ tc.function?.name || 'tool' }}
+            </span>
+          </div>
+
           <div
+            v-if="hasBody(m, i)"
             class="md-body"
             :class="{
               'streaming-pulse': streaming && i === activeChat.messages.length - 1 && m.role === 'assistant' &&
@@ -33,12 +41,13 @@
           </div>
         </div>
 
-        <div v-if="m.role === 'assistant'" class="response-actions">
-          <button class="copy-response-btn" @click="copyResponse(m.content, i)">
-            {{ copiedIndex === i ? 'Copied' : 'Copy' }}
+        <div class="response-actions" :class="{ 'user-actions': m.role === 'user' }">
+          <button v-if="(m.content || '').trim()" class="copy-response-btn" @click="copyResponse(m.content, i)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="margin-right: 4px; display: inline-block; vertical-align: -1px;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+            {{ copiedIndex === i ? 'Copied ✓' : 'Copy' }}
           </button>
           <div
-            v-if="i === lastAssistantIndex && lastTtft !== null && !streaming"
+            v-if="m.role === 'assistant' && i === lastAssistantIndex && lastTtft !== null && !streaming"
             class="response-metrics"
           >
             <span>TTFT {{ lastTtft }}ms</span>
@@ -47,6 +56,7 @@
         </div>
       </div>
     </div>
+    </template>
   </div>
 </template>
 
@@ -66,6 +76,33 @@ const props = defineProps<{
 }>();
 
 const copiedIndex = ref<number | null>(null);
+
+/** True while this row is the one the stream is actively writing into. */
+function isStreamingRow(m: any, i: number) {
+  return props.streaming && i === props.activeChat.messages.length - 1 && m.role === 'assistant';
+}
+
+/**
+ * Raw `tool` results are context for the model, not chat content — showing them
+ * produced bare bubbles with nothing but a Copy button. The tool names are
+ * surfaced as chips on the assistant turn that requested them instead. Empty
+ * assistant turns are hidden too: `send()` pushes a placeholder before the
+ * stream starts and one per tool round, and a round that returns only tool
+ * calls leaves its placeholder permanently blank.
+ */
+function isVisible(m: any, i: number) {
+  if (m.role === 'tool') return false;
+  if (isStreamingRow(m, i)) return true;
+  if ((m.content || '').trim()) return true;
+  // An image-only message has no text but is still a real turn.
+  if (m.images && m.images.length) return true;
+  return m.role === 'assistant' && !!(m.tool_calls && m.tool_calls.length);
+}
+
+/** Whether to render a markdown body, as opposed to tool chips alone. */
+function hasBody(m: any, i: number) {
+  return isStreamingRow(m, i) || !!(m.content || '').trim();
+}
 
 const lastAssistantIndex = computed(() => {
   for (let i = props.activeChat.messages.length - 1; i >= 0; i -= 1) {

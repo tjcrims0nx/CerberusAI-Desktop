@@ -25,6 +25,7 @@ impl ProviderManager {
             return crate::llama_engine::stream_chat_llama(
                 model_path,
                 messages,
+                tools,
                 on_event,
                 cancel,
                 app_dir,
@@ -46,6 +47,7 @@ impl ProviderManager {
                         crate::llama_engine::stream_chat_llama(
                             candidate,
                             messages,
+                            tools,
                             on_event,
                             cancel,
                             app_dir,
@@ -64,6 +66,7 @@ impl ProviderManager {
                 crate::llama_engine::stream_chat_llama(
                     candidate,
                     messages,
+                    tools,
                     on_event,
                     cancel,
                     app_dir,

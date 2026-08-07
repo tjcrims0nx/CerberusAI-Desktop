@@ -3,7 +3,7 @@
     <div class="horizon-welcome-wrapper" style="animation: liquid-enter 0.8s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;">
       <div style="display: inline-flex; align-items: center; gap: 8px; background: linear-gradient(135deg, rgba(88, 28, 135, 0.3) 0%, rgba(0,0,0,0.5) 100%); border: 1px solid rgba(168,85,247,0.2); padding: 6px 16px; border-radius: 50px; font-size: 0.7rem; font-weight: 800; letter-spacing: 2px; color: #d8b4fe; margin-bottom: 2rem; box-shadow: 0 0 20px rgba(88, 28, 135, 0.4), inset 0 1px 0 rgba(255,255,255,0.05);">
         <span style="width: 8px; height: 8px; border-radius: 50%; background: #f59e0b; box-shadow: 0 0 12px #f59e0b;"></span>
-        v0.5.0 BETA · REPORT BUGS ON GITHUB
+        v{{ appVersion }} BETA · REPORT BUGS ON GITHUB
       </div>
 
       <h2 style="font-size: 3rem; font-weight: 900; letter-spacing: -1px; color: #fff; margin-bottom: 0.5rem; text-shadow: 0 4px 20px rgba(0,0,0,0.5);">Good morning, Admin</h2>
@@ -59,6 +59,7 @@
 defineProps<{
   localStatus: { running: boolean };
   models: any[];
+  appVersion: string;
 }>();
 
 const emit = defineEmits(['useSuggestion', 'openFileManager', 'openPluginManager']);

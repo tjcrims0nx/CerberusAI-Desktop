@@ -11,7 +11,10 @@ import PluginSettings from "./PluginSettings.vue";
 import Dashboard from "./components/Dashboard.vue";
 import ChatView from "./components/Chat.vue";
 import Models from "./components/Models.vue";
+import FileBrowser from "./components/FileBrowser.vue";
+import WebBrowser from "./components/WebBrowser.vue";
 import { PluginManager } from "./PluginManager";
+import { requiresApproval, describeToolCall } from "./toolPolicy";
 import AnimatedBackground from "./AnimatedBackground.vue";
 
 function getFilenameForLang(lang: string): string {
@@ -70,10 +73,41 @@ const customCodeRenderer = {
 
 marked.use({ renderer: customCodeRenderer as any });
 
+/**
+ * Models routinely write a `---` line directly under a sentence, meaning it as
+ * a horizontal rule. CommonMark reads that as a *setext heading* and promotes
+ * the line above into an <h2>, so an ordinary sentence renders as a giant
+ * title. Inserting a blank line restores the intended <hr>.
+ *
+ * Only `---` is demoted. The other setext marker, `===`, is not a valid
+ * horizontal rule, so separating it would render a literal "===" paragraph —
+ * a line of `===` is always meant as a heading underline and is left alone.
+ * Fenced code blocks and table separator rows (which start with `|`) are also
+ * untouched, as is a leading `---` front-matter delimiter.
+ */
+function demoteSetextRules(text: string): string {
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let inFence = false;
+  for (const line of lines) {
+    if (/^\s{0,3}(```|~~~)/.test(line)) inFence = !inFence;
+    if (
+      !inFence &&
+      /^\s{0,3}-{3,}\s*$/.test(line) &&
+      out.length > 0 &&
+      out[out.length - 1].trim() !== ""
+    ) {
+      out.push("");
+    }
+    out.push(line);
+  }
+  return out.join("\n");
+}
+
 function renderMarkdown(text: string): string {
   if (!text) return "";
   try {
-    const html = marked.parse(text, { async: false }) as string;
+    const html = marked.parse(demoteSetextRules(text), { async: false }) as string;
     return DOMPurify.sanitize(html, {
       ADD_TAGS: ["button", "svg", "path", "polyline", "line", "rect", "circle", "span", "div"],
       ADD_ATTR: ["target", "rel", "data-lang", "data-filename", "class", "type", "viewBox", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "width", "height", "x", "y", "rx", "ry", "points", "x1", "y1", "x2", "y2", "d"],
@@ -92,14 +126,14 @@ import type {
   HuggingFaceModel,
   HuggingFaceFile,
   HardwareInfo,
+  UsageSample,
   ChatStreamChunk,
   GgufFile,
-  OllamaStatus,
   ToolCallChunk,
 } from "./types";
 
-const STORAGE_KEY = "cerberus.chats.v1";
-const MODEL_KEY = "cerberus.model.v1";
+const STORAGE_KEY = "helix.chats.v1";
+const MODEL_KEY = "helix.model.v1";
 
 // ─── Window controls (custom titlebar) ────────────────────────────────────
 const appWindow = getCurrentWindow();
@@ -128,31 +162,16 @@ function modelKey(name: string | null | undefined): string {
 
 
 
-const LEGACY_CERBERUS_MODEL_MARKERS = [
-  "arbiter",
-  "gl9b",
-  "gamma3",
-  "smolked",
-  "smol",
-  "mistral",
-  "uncensored",
-];
-
-function isLegacyCerberusModel(name: string | null | undefined): boolean {
-  const key = modelKey(name);
-  return LEGACY_CERBERUS_MODEL_MARKERS.some((marker) => key.includes(marker));
-}
-
 const chats = ref<Chat[]>([]);
 const activeId = ref<string | null>(null);
 const models = ref<OllamaModel[]>([]);
 const selectedModel = ref<string>("");
-const cloudStatus = ref<OllamaStatus>({ kind: "checking" });
 const localStatus = ref<{ running: boolean; version?: string; error?: string }>({ running: false });
 const hardware = ref<HardwareInfo | null>(null);
-const cpuUsage = ref<number>(2);
-const ramUsage = ref<number>(25);
-const vramUsage = ref<number>(10);
+const cpuUsage = ref<number>(0);
+const ramUsage = ref<number>(0);
+const vramUsage = ref<number | null>(null);
+const usageDetail = ref<UsageSample | null>(null);
 const draft = ref<string>("");
 const dragActive = ref<boolean>(false);
 const attachedImages = ref<string[]>([]);
@@ -188,6 +207,14 @@ function removeImage(index: number) {
 
 function removeFile(index: number) {
   attachedFiles.value.splice(index, 1);
+}
+
+// Attachments coming from the Files & Pictures manager (Library or Browse tab).
+function onBrowserAttachImage(base64: string) {
+  attachedImages.value.push(base64);
+}
+function onBrowserAttachFile(file: { name: string; content: string }) {
+  attachedFiles.value.push(file);
 }
 
 const fileInput = ref<HTMLInputElement | null>(null);
@@ -229,10 +256,15 @@ async function handleFileSelect(e: Event) {
 const streamingContent = ref<string>("");
 const updating = ref<boolean>(false);
 const updateInfo = ref<{ current: string; latest: string; available: boolean } | null>(null);
-const appVersion = ref<string>("0.5.0");
+const appVersion = ref<string>("0.1.0");
 const messagesEl = ref<HTMLElement | null>(null);
 const lastTtft = ref<number | null>(null);
 const lastTps = ref<number | null>(null);
+
+// Placeholder shown while a cold model loads. Held as a constant so the stream
+// handler can recognise it and avoid committing it as message content.
+const LOADING_HINT =
+  "_loading model into memory — first response after a model switch can take a minute…_";
 
 function stripThinkTags(text: string): string {
   // Remove completed <think>...</think> blocks (including multiline)
@@ -266,7 +298,14 @@ function finalizeMessage(text: string): string {
 
 // Model Manager (LM Studio-style)
 const showFileManager = ref(false);
+const showFileBrowser = ref(false);
+const showWebBrowser = ref(false);
 const showPluginManager = ref(false);
+
+// The tool call awaiting user approval, and the resolver that the dialog's
+// Allow/Deny buttons complete. Null whenever no dialog is open.
+const pendingApproval = ref<{ toolName: string; detail: string } | null>(null);
+let approvalResolver: ((approved: boolean) => void) | null = null;
 const pluginManager = new PluginManager();
 const mcpToolMap = ref<Map<string, string>>(new Map()); // toolName -> pluginId
 const mcpConfigs = ref<any[]>([]);
@@ -342,13 +381,7 @@ async function connectMcpPlugins(configs?: any[]) {
   if (configs) {
     mcpConfigs.value = configs;
   } else {
-    const savedPlugins = await invoke<string | null>("db_get_kv", { key: "mcp-plugins" });
-    if (savedPlugins) {
-      mcpConfigs.value = JSON.parse(savedPlugins);
-    } else {
-      mcpConfigs.value = await pluginManager.discoverPlugins();
-      await invoke("db_set_kv", { key: "mcp-plugins", value: JSON.stringify(mcpConfigs.value) });
-    }
+    mcpConfigs.value = await pluginManager.loadWithDiscovered();
   }
 
   await pluginManager.syncPlugins(mcpConfigs.value);
@@ -570,6 +603,22 @@ const activeChat = computed<Chat | null>(() =>
 //   hardware.value ? (hardware.value.total_ram_mb / 1024).toFixed(1) : "—"
 // );
 const primaryGpu = computed(() => hardware.value?.gpus[0] ?? null);
+
+const ramTooltip = computed(() => {
+  const u = usageDetail.value;
+  if (!u) return "";
+  return `${(u.ram_used_mb / 1024).toFixed(1)} / ${(u.ram_total_mb / 1024).toFixed(1)} GB`;
+});
+
+const vramTooltip = computed(() => {
+  const gpu = primaryGpu.value?.name ?? "";
+  const u = usageDetail.value;
+  if (!u || u.vram_used_mb === null || u.vram_total_mb === null) {
+    return gpu ? `${gpu} — VRAM usage unavailable` : "VRAM usage unavailable";
+  }
+  const amounts = `${(u.vram_used_mb / 1024).toFixed(1)} / ${(u.vram_total_mb / 1024).toFixed(1)} GB`;
+  return gpu ? `${gpu} — ${amounts}` : amounts;
+});
 const vramGb = computed(() => {
   const v = primaryGpu.value?.vram_mb;
   return v ? (v / 1024).toFixed(1) : null;
@@ -638,7 +687,7 @@ function getSystemPrompt(modelName: string): string {
   const modelDisplayName = modelName ? modelName.replace(/\.gguf$/i, '') : "Local LLM";
   return [
     `You are ${modelDisplayName}, an advanced AI model running locally via the desktop engine.`,
-    `Always recognize and identify yourself as ${modelDisplayName}, not as Cerberus.`,
+    `Always recognize and identify yourself as ${modelDisplayName}, not as HELIX.`,
     "You have access to Model Context Protocol (MCP) tools. You MUST proactively use these tools to read files, run commands, fetch data, and edit code to fulfill the user's requests.",
     "Do NOT ask the user for permission to use tools, just use the tools to find the information yourself.",
     "If you encounter an error using a tool, reason about it and try to fix it or use a different approach.",
@@ -701,9 +750,9 @@ watch(selectedModel, (v) => {
 
 async function refreshModels() {
   try {
-    const list = await invoke<OllamaModel[]>("list_models");
-    const withoutLegacy = list.filter((m) => !isLegacyCerberusModel(m.name));
-    const filtered = withoutLegacy;
+    // No model filtering — every local model Ollama or the GGUF scan reports is
+    // shown in the picker, LM-Studio style.
+    const filtered = await invoke<OllamaModel[]>("list_models");
     models.value = filtered;
 
     if (
@@ -732,24 +781,6 @@ async function checkLocal() {
   await refreshLocalGgufs();
 }
 
-// @ts-ignore: checkApi kept for future re-use
-async function checkApi() {
-  if (!apiKey.value) {
-    cloudStatus.value = { kind: "missing" };
-    return;
-  }
-  cloudStatus.value = { kind: "checking" };
-  try {
-    await invoke<string>("check_api", { apiKey: apiKey.value });
-    cloudStatus.value = { kind: "ok", version: "cloud" };
-  } catch (e: any) {
-    const msg = String(e ?? "unknown");
-    cloudStatus.value = msg.includes("401") || msg.includes("403")
-      ? { kind: "error", message: "Invalid API key" }
-      : { kind: "error", message: `Cloud auth service unavailable: ${msg}` };
-  }
-}
-
 async function checkForUpdate() {
   try {
     const info = await invoke<{ current: string; latest: string; available: boolean }>(
@@ -768,6 +799,19 @@ async function detectHardware() {
     hardware.value = await invoke<HardwareInfo>("detect_hardware");
   } catch (e) {
     console.warn("detect_hardware failed", e);
+  }
+}
+
+/** Poll real CPU / RAM / VRAM utilization for the sidebar meters. */
+async function sampleUsage() {
+  try {
+    const sample = await invoke<UsageSample>("sample_usage");
+    usageDetail.value = sample;
+    cpuUsage.value = sample.cpu_pct;
+    ramUsage.value = sample.ram_pct;
+    vramUsage.value = sample.vram_pct;
+  } catch (e) {
+    console.warn("sample_usage failed", e);
   }
 }
 
@@ -884,19 +928,20 @@ async function send() {
   // Safety timeout: if no content arrives within 5 minutes, unblock the UI.
   // Cold-loading a multi-GB GGUF off a slow disk can easily take 60-120s,
   // and that delay shouldn't trip a "no response" error.
+  // Both timers fire long after `targetIdx` is initialised below, and write to
+  // it rather than `assistantIdx` so a tool round can't send them to a stale row.
   let gotContent = false;
   const loadingHintTimer = setTimeout(() => {
     if (!gotContent && streaming.value) {
-      streamingContent.value =
-        "_loading model into memory — first response after a model switch can take a minute…_";
-      chat.messages[assistantIdx].content = streamingContent.value;
+      streamingContent.value = LOADING_HINT;
+      chat.messages[targetIdx].content = streamingContent.value;
     }
   }, 8_000);
   const safetyTimer = setTimeout(() => {
     if (!gotContent && streaming.value) {
       streamingContent.value =
         "\n\n[error] No response from model after 5 minutes — Ollama may be stuck. Try `ollama ps` to confirm it's loaded, then retry.";
-      chat.messages[assistantIdx].content = streamingContent.value;
+      chat.messages[targetIdx].content = streamingContent.value;
       streaming.value = false;
       saveChats();
     }
@@ -911,9 +956,17 @@ async function send() {
     console.warn("Failed to gather MCP tools", e);
   }
 
-  // We may need to loop for tool calls (the LLM calls a tool, we execute
-  // it, feed the result back, and let the LLM continue).
+  // Tool-call loop: the model may ask for tools, we run them and feed the
+  // results back so it can continue — repeatedly, since answering one tool
+  // call often reveals the need for the next.
+  const MAX_TOOL_ROUNDS = 8;
+
+  // The assistant message the stream is currently writing into. Each tool
+  // round appends a fresh one, so the callback reads this instead of closing
+  // over a fixed index.
+  let targetIdx = assistantIdx;
   let pendingToolCalls: ToolCallChunk[] | null = null;
+  let streamError: string | null = null;
 
   const channel = new Channel<ChatStreamChunk>();
   channel.onmessage = (chunk) => {
@@ -923,8 +976,9 @@ async function send() {
     if (chunk.error) {
       clearTimeout(loadingHintTimer);
       clearTimeout(safetyTimer);
+      streamError = chunk.error;
       streamingContent.value += `\n\n[error] ${chunk.error}`;
-      chat.messages[assistantIdx].content = finalizeMessage(streamingContent.value);
+      chat.messages[targetIdx].content = finalizeMessage(streamingContent.value);
       streaming.value = false;
       saveChats();
       return;
@@ -946,121 +1000,161 @@ async function send() {
     if (chunk.done) {
       clearTimeout(loadingHintTimer);
       clearTimeout(safetyTimer);
-      chat.messages[assistantIdx].content = finalizeMessage(streamingContent.value);
+      // The loading hint is UI chrome, not an answer, so it must never be
+      // committed as the message body. Compared exactly rather than inferred
+      // from `gotContent`, so a real error already written by the safety
+      // timeout survives a late `done`.
+      const body = streamingContent.value === LOADING_HINT ? "" : streamingContent.value;
+      chat.messages[targetIdx].content = finalizeMessage(body);
       streaming.value = false;
       streamingContent.value = "";
       saveChats();
     }
   };
 
-  // Cap history to last 20 messages to avoid overwhelming the context window
-  const history = chat.messages.slice(0, -1);
-  const cappedHistory = history.length > 20 ? history.slice(-20) : history;
-  const messagesToSend = [
-    { role: "system", content: getSystemPrompt(selectedModel.value) },
-    ...cappedHistory,
-  ];
+  // Everything before the assistant placeholder, capped to the last 20 messages
+  // so a long chat doesn't overwhelm the context window.
+  const buildMessages = (upTo: number) => {
+    const history = chat.messages.slice(0, upTo);
+    const capped = history.length > 20 ? history.slice(-20) : history;
+    return [
+      { role: "system", content: getSystemPrompt(selectedModel.value) },
+      ...capped,
+    ];
+  };
 
   try {
-    await invoke("chat_stream", {
-      // Ollama stores model names lowercase. Use modelKey() so a UI value
-      // like "Phi-4-Mini-Instruct-Annihilated" is dispatched consistently.
-      model: modelKey(selectedModel.value),
-      messages: messagesToSend,
-      tools: ollamaTools,
-      onEvent: channel,
-    });
-
-    // Tool-call loop: if Ollama returned tool_calls, execute them and
-    // continue the conversation automatically.
-    if (pendingToolCalls && (pendingToolCalls as ToolCallChunk[]).length > 0) {
-      // Record the assistant message with tool_calls
-      chat.messages[assistantIdx].tool_calls = pendingToolCalls;
-
-      for (const tc of pendingToolCalls as ToolCallChunk[]) {
-        const toolName = tc.function.name;
-        const toolArgs = typeof tc.function.arguments === "string"
-          ? JSON.parse(tc.function.arguments)
-          : tc.function.arguments;
-
-        const pluginId = mcpToolMap.value.get(toolName);
-        if (!pluginId) {
-          chat.messages.push({ role: "tool", content: `[error] Unknown tool: ${toolName}` });
-          continue;
-        }
-
-        // Show the user what's happening
-        streamingContent.value = `_🔧 Running tool: ${toolName}…_`;
-        streaming.value = true;
-        const toolIdx = chat.messages.length;
-        chat.messages.push({ role: "tool", content: "" });
-        await scrollToBottom();
-
-        try {
-          const result = await pluginManager.callTool(pluginId, toolName, toolArgs);
-          const resultText = result.content
-            ?.map((c: any) => c.text ?? JSON.stringify(c))
-            .join("\n") ?? JSON.stringify(result);
-          chat.messages[toolIdx].content = resultText;
-        } catch (e) {
-          chat.messages[toolIdx].content = `[tool error] ${String(e)}`;
-        }
-      }
-
-      // Now continue the conversation with the tool results
-      streaming.value = true;
-      streamingContent.value = "";
-      gotContent = false;
+    for (let round = 1; ; round += 1) {
       pendingToolCalls = null;
 
-      const newAssistantIdx = chat.messages.length;
-      chat.messages.push({ role: "assistant", content: "" });
-      // Update the channel callback to target the new assistant message
-      channel.onmessage = (chunk) => {
-        if (chunk.ttft_ms !== undefined && chunk.ttft_ms !== null) lastTtft.value = chunk.ttft_ms;
-        if (chunk.tps !== undefined && chunk.tps !== null) lastTps.value = chunk.tps;
-        if (chunk.error) {
-          streamingContent.value += `\n\n[error] ${chunk.error}`;
-          chat.messages[newAssistantIdx].content = finalizeMessage(streamingContent.value);
-          streaming.value = false;
-          saveChats();
-          return;
-        }
-        if (chunk.delta) {
-          if (!gotContent) { streamingContent.value = ""; }
-          gotContent = true;
-          streamingContent.value += chunk.delta;
-          scrollToBottom();
-        }
-        if (chunk.done) {
-          chat.messages[newAssistantIdx].content = finalizeMessage(streamingContent.value);
-          streaming.value = false;
-          streamingContent.value = "";
-          saveChats();
-        }
-      };
-
-      const followUpMessages = [
-        { role: "system", content: getSystemPrompt(selectedModel.value) },
-        ...chat.messages.slice(0, newAssistantIdx),
-      ];
-
       await invoke("chat_stream", {
+        // Ollama stores model names lowercase. Use modelKey() so a UI value
+        // like "Phi-4-Mini-Instruct-Annihilated" is dispatched consistently.
         model: modelKey(selectedModel.value),
-        messages: followUpMessages,
+        messages: buildMessages(targetIdx),
         tools: ollamaTools,
         onEvent: channel,
       });
+
+      const toolCalls = pendingToolCalls as ToolCallChunk[] | null;
+      if (streamError || !toolCalls || toolCalls.length === 0) break;
+
+      // Record the assistant turn that requested the tools.
+      chat.messages[targetIdx].tool_calls = toolCalls;
+
+      if (round >= MAX_TOOL_ROUNDS) {
+        chat.messages[targetIdx].content = finalizeMessage(
+          `${chat.messages[targetIdx].content}\n\n_[stopped after ${MAX_TOOL_ROUNDS} tool rounds]_`.trim()
+        );
+        streaming.value = false;
+        saveChats();
+        break;
+      }
+
+      await runToolCalls(toolCalls, chat);
+
+      // Continue with the tool results in context.
+      streaming.value = true;
+      streamingContent.value = "";
+      gotContent = false;
+      targetIdx = chat.messages.length;
+      chat.messages.push({ role: "assistant", content: "" });
+      await scrollToBottom();
     }
   } catch (e) {
     clearTimeout(loadingHintTimer);
     clearTimeout(safetyTimer);
     streamingContent.value += `\n\n[error] ${String(e)}`;
-    chat.messages[assistantIdx].content = streamingContent.value;
+    chat.messages[targetIdx].content = streamingContent.value;
     streaming.value = false;
     streamingContent.value = "";
     saveChats();
   }
+}
+
+/**
+ * Run each requested tool through its MCP plugin, appending one `tool` message
+ * per call so the model can read the results on the next round.
+ */
+async function runToolCalls(toolCalls: ToolCallChunk[], chat: Chat) {
+  for (const tc of toolCalls) {
+    const toolName = tc.function.name;
+
+    let toolArgs: any;
+    try {
+      toolArgs = typeof tc.function.arguments === "string"
+        ? JSON.parse(tc.function.arguments)
+        : tc.function.arguments;
+    } catch {
+      chat.messages.push({
+        role: "tool",
+        content: `[error] Malformed arguments for ${toolName}: ${tc.function.arguments}`,
+      });
+      continue;
+    }
+
+    const pluginId = mcpToolMap.value.get(toolName);
+    if (!pluginId) {
+      chat.messages.push({ role: "tool", content: `[error] Unknown tool: ${toolName}` });
+      continue;
+    }
+
+    // Side-effecting tools need the user to see the exact call before it runs.
+    if (requiresApproval(toolName)) {
+      const approved = await requestToolApproval(toolName, toolArgs);
+      if (!approved) {
+        // Reported back to the model rather than silently skipped, so it can
+        // explain itself or choose another approach instead of stalling.
+        chat.messages.push({
+          role: "tool",
+          content: `[denied] The user declined to run ${toolName}.`,
+        });
+        continue;
+      }
+    }
+
+    // Show the user what's happening
+    streamingContent.value = `_🔧 Running tool: ${toolName}…_`;
+    streaming.value = true;
+    const toolIdx = chat.messages.length;
+    chat.messages.push({ role: "tool", content: "" });
+    await scrollToBottom();
+
+    try {
+      const result = await pluginManager.callTool(pluginId, toolName, toolArgs);
+      const text = result.content
+        ?.map((c: any) => c.text ?? JSON.stringify(c))
+        .join("\n") ?? JSON.stringify(result);
+      // MCP reports tool failures as a normal result carrying `isError`, so
+      // without this the model reads a failure as a success.
+      chat.messages[toolIdx].content = result.isError ? `[tool error] ${text}` : text;
+    } catch (e) {
+      chat.messages[toolIdx].content = `[tool error] ${String(e)}`;
+    }
+  }
+}
+
+/**
+ * Show the approval dialog and resolve once the user answers.
+ *
+ * The dialog is plain state plus a stored resolver rather than a component
+ * event, so the tool loop can simply `await` it inline.
+ */
+function requestToolApproval(toolName: string, args: any): Promise<boolean> {
+  pendingApproval.value = {
+    toolName,
+    detail: describeToolCall(toolName, args),
+  };
+  return new Promise<boolean>((resolve) => {
+    approvalResolver = resolve;
+  });
+}
+
+function resolveToolApproval(approved: boolean) {
+  pendingApproval.value = null;
+  const resolver = approvalResolver;
+  approvalResolver = null;
+  resolver?.(approved);
 }
 
 async function stopChat() {
@@ -1196,21 +1290,8 @@ onMounted(async () => {
   ]);
   await checkLocal();
 
-  setInterval(() => {
-    let cpuTarget = 2 + Math.random() * 5;
-    let ramTarget = 30 + Math.random() * 10;
-    let vramTarget = 15 + Math.random() * 10;
-
-    if (streaming.value) {
-      cpuTarget = 85 + Math.random() * 14;
-      vramTarget = 88 + Math.random() * 10;
-      ramTarget += 5;
-    }
-
-    cpuUsage.value += (cpuTarget - cpuUsage.value) * 0.3;
-    ramUsage.value += (ramTarget - ramUsage.value) * 0.1;
-    vramUsage.value += (vramTarget - vramUsage.value) * 0.2;
-  }, 1000);
+  setInterval(sampleUsage, 1000);
+  sampleUsage();
 
   await startMcpImmediately();
 });
@@ -1254,7 +1335,51 @@ onMounted(async () => {
     @close="showFileManager = false"
   />
 
+  <!-- Files & Pictures Manager (Library + Browse) -->
+  <FileBrowser
+    :show="showFileBrowser"
+    @close="showFileBrowser = false"
+    @attachImage="onBrowserAttachImage"
+    @attachFile="onBrowserAttachFile"
+  />
+
+  <!-- In-app Web Browser (live page + attach screenshot / page text) -->
+  <WebBrowser
+    :show="showWebBrowser"
+    @close="showWebBrowser = false"
+    @attachImage="onBrowserAttachImage"
+    @attachFile="onBrowserAttachFile"
+  />
+
   <!-- MCP Plugin Manager Modal -->
+  <!--
+    Tool approval gate. Sits above every other overlay (z-index in style.css) so a
+    pending call cannot be hidden behind another panel, and offers no dismiss-by-
+    backdrop: the only ways out are Allow and Deny, both of which answer the model.
+  -->
+  <div v-if="pendingApproval" class="gate-overlay approval-overlay">
+    <div class="approval-panel">
+      <div class="approval-header">
+        <div class="approval-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>
+        </div>
+        <div>
+          <h3 class="approval-title">Allow this action?</h3>
+          <p class="approval-subtitle">
+            The model wants to run <code>{{ pendingApproval.toolName }}</code>
+          </p>
+        </div>
+      </div>
+
+      <pre class="approval-detail">{{ pendingApproval.detail }}</pre>
+
+      <div class="approval-actions">
+        <button class="approval-deny" @click="resolveToolApproval(false)">Deny</button>
+        <button class="approval-allow" @click="resolveToolApproval(true)">Allow</button>
+      </div>
+    </div>
+  </div>
+
   <div v-if="showPluginManager" class="gate-overlay" style="background: rgba(0,0,0,0.72); backdrop-filter: blur(24px) saturate(1.4);">
     <div class="manager-panel" style="width: min(900px, 92vw); height: min(850px, 88vh);">
       <div class="manager-header">
@@ -1264,7 +1389,7 @@ onMounted(async () => {
           </div>
           <div>
             <h2 class="manager-title" style="letter-spacing: 0.04em;">MCP PLUGINS</h2>
-            <p class="manager-subtitle">Extend Cerberus with external capabilities</p>
+            <p class="manager-subtitle">Extend HELIX with external capabilities</p>
           </div>
           <button class="manager-close" @click="showPluginManager = false">✕</button>
         </div>
@@ -1321,10 +1446,10 @@ onMounted(async () => {
       <div class="brand">
         <div class="brand-logo-container">
           <div class="brand-logo-glow"></div>
-          <div class="brand-logo" style="font-size: 1.1rem; padding-bottom: 2px;">C</div>
+          <img src="/helix-logo.png" alt="HELIX" class="brand-logo-img" />
         </div>
         <div style="display: flex; flex-direction: column;">
-          <div class="brand-name">CERBERUS <span style="color: #a1a1aa; text-transform: none; font-style: italic;">AI</span></div>
+          <div class="brand-name">HELIX</div>
           <div class="brand-sub">v{{ appVersion }}</div>
         </div>
       </div>
@@ -1362,15 +1487,15 @@ onMounted(async () => {
             <div style="flex: 1; height: 6px; background: rgba(0,0,0,0.6); border-radius: 4px; overflow: hidden; margin: 0 10px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.8), 0 1px 0 rgba(255,255,255,0.05);">
               <div :style="{ width: Math.round(ramUsage) + '%', height: '100%', background: 'linear-gradient(90deg, #064e3b, #34d399)', transition: 'width 1s cubic-bezier(0.4, 0, 0.2, 1)', boxShadow: '0 0 10px rgba(52, 211, 153, 0.6)' }"></div>
             </div>
-            <span class="hw-val" style="width: 34px; text-align: right; font-variant-numeric: tabular-nums;">{{ Math.round(ramUsage) }}%</span>
+            <span class="hw-val" :title="ramTooltip" style="width: 34px; text-align: right; font-variant-numeric: tabular-nums;">{{ Math.round(ramUsage) }}%</span>
           </div>
           <div class="hw-line">
             <span class="hw-label" style="color: #a855f7; width: 38px;">VRAM</span>
             <div style="flex: 1; height: 6px; background: rgba(0,0,0,0.6); border-radius: 4px; overflow: hidden; margin: 0 10px; box-shadow: inset 0 1px 3px rgba(0,0,0,0.8), 0 1px 0 rgba(255,255,255,0.05);">
-              <div :style="{ width: Math.round(vramUsage) + '%', height: '100%', background: 'linear-gradient(90deg, #4c1d95, #a855f7)', transition: 'width 1s cubic-bezier(0.4, 0, 0.2, 1)', boxShadow: '0 0 10px rgba(168, 85, 247, 0.6)' }"></div>
+              <div :style="{ width: Math.round(vramUsage ?? 0) + '%', height: '100%', background: 'linear-gradient(90deg, #4c1d95, #a855f7)', transition: 'width 1s cubic-bezier(0.4, 0, 0.2, 1)', boxShadow: '0 0 10px rgba(168, 85, 247, 0.6)' }"></div>
             </div>
-            <span class="hw-val" :title="primaryGpu?.name || ''" style="width: 34px; text-align: right; font-variant-numeric: tabular-nums;">
-              {{ Math.round(vramUsage) }}%
+            <span class="hw-val" :title="vramTooltip" style="width: 34px; text-align: right; font-variant-numeric: tabular-nums;">
+              {{ vramUsage === null ? '—' : Math.round(vramUsage) + '%' }}
             </span>
           </div>
         </div>
@@ -1405,7 +1530,7 @@ onMounted(async () => {
     <main class="main">
       <header class="main-header">
         <div style="display: flex; align-items: center; gap: 10px;">
-          <h1 style="font-size: 0.82rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(255,255,255,0.45); margin: 0;">CERBERUS <span style="color: #fff;">AI</span></h1>
+          <h1 style="font-size: 0.82rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(255,255,255,0.45); margin: 0;">HELIX</h1>
         </div>
         <div style="display: flex; align-items: center; gap: 8px;">
           <div class="model-tag-display" v-if="selectedModel" style="background: rgba(168,85,247,0.12); border: 1px solid rgba(168,85,247,0.25); color: #d8b4fe; font-size: 0.75rem; padding: 4px 10px; border-radius: 6px; display: flex; align-items: center; gap: 6px;">
@@ -1446,6 +1571,7 @@ onMounted(async () => {
             v-else
             :localStatus="localStatus"
             :models="models"
+            :appVersion="appVersion"
             @useSuggestion="useSuggestion"
             @openFileManager="openFileManager"
             @openPluginManager="showPluginManager = true"
@@ -1476,6 +1602,14 @@ onMounted(async () => {
 
               <div v-if="showAttachMenu" style="position: absolute; bottom: 50px; left: 0; padding: 0.5rem; border-radius: 12px; display: flex; flex-direction: column; width: 180px; z-index: 100; background: #1e1e1e; border: 1px solid rgba(255,255,255,0.08); box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
                 <div style="font-size: 0.75rem; color: rgba(255,255,255,0.4); font-weight: 600; padding: 8px 12px; margin-bottom: 4px;">Add Context</div>
+                <button @click="showFileBrowser = true; showAttachMenu = false" class="attach-menu-item">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.7;"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                  <span>Files &amp; Pictures</span>
+                </button>
+                <button @click="showWebBrowser = true; showAttachMenu = false" class="attach-menu-item">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.7;"><circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path></svg>
+                  <span>Web Browser</span>
+                </button>
                 <button @click="triggerImageInput(); showAttachMenu = false" class="attach-menu-item">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="opacity: 0.7;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
                   <span>Media</span>
@@ -1495,7 +1629,7 @@ onMounted(async () => {
 
             <textarea
               v-model="draft"
-              placeholder="Message Cerberus…"
+              placeholder="Message HELIX…"
               rows="1"
               style="flex: 1; background: transparent; border: none; color: #fff; font-size: 0.95rem; line-height: 24px; resize: none; min-height: 24px; max-height: 200px; padding: 8px 0; outline: none; margin-bottom: 0;"
               @keydown="onComposerKeydown"

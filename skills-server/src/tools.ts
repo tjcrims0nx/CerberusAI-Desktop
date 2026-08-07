@@ -1,9 +1,45 @@
 import fs from "fs/promises";
 import util from "util";
 import { exec } from "child_process";
-import puppeteer from "puppeteer";
 
 const execAsync = util.promisify(exec);
+
+/**
+ * Strip a HTML document down to readable text.
+ *
+ * Deliberately not a browser: an earlier version launched Puppeteer for this one
+ * tool, which pulls a ~300 MB Chromium download and is by far the heaviest and
+ * most failure-prone part of installing this server. Script/style/head content is
+ * dropped, tags are removed, and entities are decoded — enough for a model to read
+ * an article or a docs page. Pages that render entirely client-side will come back
+ * sparse; that is the accepted trade.
+ */
+function htmlToText(html: string): string {
+  const withoutHead = html
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<!--[\s\S]*?-->/g, " ");
+
+  const spaced = withoutHead
+    .replace(/<\/(p|div|section|article|h[1-6]|li|tr|blockquote)>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<[^>]+>/g, " ");
+
+  const entities: Record<string, string> = {
+    "&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">",
+    "&quot;": '"', "&#39;": "'", "&apos;": "'",
+  };
+  const decoded = spaced
+    .replace(/&nbsp;|&amp;|&lt;|&gt;|&quot;|&#39;|&apos;/g, (m) => entities[m])
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+
+  return decoded
+    .split("\n")
+    .map((line) => line.replace(/[ \t ]+/g, " ").trim())
+    .filter(Boolean)
+    .join("\n");
+}
 
 export const TOOLS = [
   {
@@ -57,7 +93,7 @@ export const TOOLS = [
   },
   {
     name: "read_url",
-    description: "Read and extract text content from a URL using a headless browser.",
+    description: "Fetch a URL and extract its readable text content.",
     inputSchema: {
       type: "object",
       properties: { url: { type: "string" } },
@@ -122,12 +158,27 @@ export async function handleToolCall(name: string, args: any): Promise<any> {
         return { content: [{ type: "text", text: text || "Command executed successfully with no output." }] };
       }
       case "read_url": {
-        const browser = await puppeteer.launch({ headless: true });
-        const page = await browser.newPage();
-        await page.goto(args.url, { waitUntil: "networkidle2" });
-        const text = await page.evaluate(() => document.body.innerText);
-        await browser.close();
-        return { content: [{ type: "text", text: text.substring(0, 10000) }] };
+        const target = new URL(args.url);
+        if (target.protocol !== "http:" && target.protocol !== "https:") {
+          throw new Error("Only http and https URLs are supported.");
+        }
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 20000);
+        try {
+          const res = await fetch(target, {
+            signal: controller.signal,
+            headers: { "User-Agent": "HELIX-Skills/1.0", Accept: "text/html,text/plain,*/*" },
+          });
+          if (!res.ok) {
+            throw new Error(`HTTP ${res.status} ${res.statusText}`);
+          }
+          const body = await res.text();
+          const isHtml = (res.headers.get("content-type") || "").includes("html");
+          const text = isHtml ? htmlToText(body) : body;
+          return { content: [{ type: "text", text: text.substring(0, 10000) }] };
+        } finally {
+          clearTimeout(timeout);
+        }
       }
       case "list_awesome_skills": {
         const skills = await pluginManager.fetchAwesomeSkills();

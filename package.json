@@ -1,9 +1,9 @@
 {
-  "name": "cerberus-desktop",
+  "name": "helix-desktop",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
-  "description": "Cerberus AI — local-first chat dashboard for uncensored language models",
+  "description": "HELIX — local-first chat dashboard for uncensored language models",
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",

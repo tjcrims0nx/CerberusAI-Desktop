@@ -1,12 +1,14 @@
-//! Cerberus chat backend.
+//! HELIX chat backend.
 //!
 //! Architecture:
-//!   * The user's API key is verified against https://api.cerberusai.dev/v1/models
-//!     (cloud auth gate — `verify_key`).
 //!   * All chat inference happens on the user's own machine via the local Ollama
 //!     daemon at http://127.0.0.1:11434  (`list_local`, `stream_chat_local`,
 //!     `pull_model`, `local_status`).
+//!   * Models are discovered/downloaded from HuggingFace (`search_huggingface`,
+//!     `pull_model`) and can also be run directly from a `.gguf` file by
+//!     `llama_engine`.
 
+use crate::proc::NoWindow;
 use crate::{ChatMessage, ChatStreamChunk, ToolCallChunk, ToolCallFunction};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -26,7 +28,7 @@ fn http() -> Result<reqwest::Client, reqwest::Error> {
         return Ok(c.clone());
     }
     let c = reqwest::Client::builder()
-        .user_agent(concat!("CerberusDesktop/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("HELIX-Desktop/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(60 * 60)) // long for first model pull
         .build()?;
@@ -39,7 +41,7 @@ fn http_short() -> Result<reqwest::Client, reqwest::Error> {
         return Ok(c.clone());
     }
     let c = reqwest::Client::builder()
-        .user_agent(concat!("CerberusDesktop/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("HELIX-Desktop/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(5))
         .timeout(Duration::from_secs(10))
         .build()?;
@@ -60,14 +62,6 @@ async fn which_ollama() -> Option<std::path::PathBuf> {
         }
     }
     None
-}
-
-// ─── Cloud: API-key verification only ──────────────────────────────────────
-
-/// Verify the API key against api.cerberusai.dev.
-/// Returns `"ok"` on success, or an error with the upstream status / network detail.
-pub async fn verify_key(_api_key: &str) -> Result<String, anyhow::Error> {
-    Ok("ok".to_string())
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -363,6 +357,9 @@ pub async fn list_local(app_dir: std::path::PathBuf) -> Result<Vec<ModelInfo>, a
     // 2. Scan local models folder for GGUF files
     if let Ok(local_ggufs) = list_local_ggufs(app_dir).await {
         for f in local_ggufs {
+            if is_projector_gguf(&f.name) {
+                continue;
+            }
             let model_name = f.name.clone();
             if !out.iter().any(|m| m.name.eq_ignore_ascii_case(&model_name)) {
                 let quant = extract_quant(&f.name);
@@ -422,7 +419,7 @@ pub struct PullProgress {
     pub resumed: Option<bool>,
 }
 
-/// Download the smallest GGUF for `name` from llm.cerberusai.dev and import
+/// Download the smallest GGUF for `name` from the configured model index and import
 /// it into the user's local Ollama via `/api/create`. Progress is streamed
 /// to `out`: byte-progress during download, then status messages from
 /// Ollama while the model is imported.
@@ -591,7 +588,7 @@ pub async fn pull_model(
     // One shared client so all 8 workers reuse TLS sessions and the connection pool.
     let chunk_client = Arc::new(
         reqwest::Client::builder()
-            .user_agent(concat!("CerberusDesktop/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("HELIX-Desktop/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(3600))
             .build()?
@@ -782,7 +779,7 @@ pub async fn pull_model(
     });
 
     // 3. Finalize the downloaded GGUF file.
-    //    Keep it in ~/.CerberusAI/models/ with its original filename so llama-server
+    //    Keep it in ~/.HELIX/models/ with its original filename so llama-server
     //    can load it directly. Also attempt ollama create if Ollama is running.
     let final_path = models_dir.join(&clean_filename);
     if final_path != temp_path {
@@ -828,6 +825,7 @@ pub async fn pull_model(
                 .arg(&modelfile_path)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
+                .no_window()
                 .output()
                 .await;
             let _ = tokio::fs::remove_file(&modelfile_path).await;
@@ -1101,6 +1099,21 @@ pub async fn stream_chat_local(
 
 // ─── Local Filesystem: GGUF File Management ──────────────────────────────
 
+/// Whether a `.gguf` is a multimodal projector rather than a loadable model.
+///
+/// Vision models ship a companion `mmproj-*.gguf` holding the image encoder.
+/// Its architecture is `clip`, so `llama-server` refuses it with "unsupported
+/// model architecture" and exits — offering one in the model picker only
+/// produces a model that can never load. llama.cpp names these files by
+/// convention, which is what the check keys on.
+///
+/// Only the picker filters them; disk-management listings still show them so
+/// they can be deleted or moved.
+pub fn is_projector_gguf(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.contains("mmproj") || lower.contains("mm-proj")
+}
+
 #[derive(Debug, Serialize, Clone)]
 pub struct GgufFile {
     pub name: String,
@@ -1241,6 +1254,7 @@ pub async fn import_local_gguf(
         .arg(&model_name)
         .arg("-f")
         .arg(&modelfile_path)
+        .no_window()
         .output()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start `ollama` CLI: {e}. Is Ollama in your PATH?"))?;
@@ -1283,6 +1297,7 @@ pub async fn activate_managed_gguf(
         .arg(&model_name)
         .arg("-f")
         .arg(&modelfile_path)
+        .no_window()
         .output()
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start `ollama` CLI: {e}. Is Ollama in your PATH?"))?;

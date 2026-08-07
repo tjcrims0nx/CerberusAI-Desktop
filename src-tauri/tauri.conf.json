@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Cerberus",
-  "version": "0.5.0",
-  "identifier": "dev.cerberusai.desktop",
+  "productName": "HELIX",
+  "version": "0.6.0",
+  "identifier": "dev.helix.desktop",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "Cerberus",
+        "title": "HELIX",
         "width": 1200,
         "height": 800,
         "minWidth": 720,
@@ -26,24 +26,28 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: asset: https://asset.localhost; connect-src 'self' https://api.cerberusai.dev https://huggingface.co http://127.0.0.1:11434 http://127.0.0.1:11435 ipc: http://ipc.localhost; font-src 'self' data: https://fonts.gstatic.com"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: asset: https://asset.localhost; connect-src 'self' https://huggingface.co http://127.0.0.1:11434 http://127.0.0.1:11435 ipc: http://ipc.localhost; font-src 'self' data: https://fonts.gstatic.com"
     }
   },
   "bundle": {
     "active": true,
     "targets": ["msi", "nsis"],
-    "publisher": "CerberusAI",
+    "publisher": "HELIX",
     "shortDescription": "Local-first uncensored AI chat",
-    "longDescription": "Cerberus is a local-first chat dashboard for uncensored language models. Runs entirely on your machine via Ollama.",
+    "longDescription": "HELIX is a local-first chat dashboard for uncensored language models. Runs entirely on your machine via Ollama.",
     "category": "DeveloperTool",
-    "copyright": "Copyright (c) 2026 CerberusAI",
-    "homepage": "https://cerberusai.dev",
+    "copyright": "Copyright (c) 2026 HELIX",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "resources": [
+      "../skills-server/package.json",
+      "../skills-server/dist/**/*",
+      "../skills-server/node_modules/**/*"
     ],
     "windows": {
       "webviewInstallMode": {
@@ -61,10 +65,7 @@
       }
     },
     "fileAssociations": [],
-    "createUpdaterArtifacts": false,
-    "externalBin": [
-      "../src-python/airllm-sidecar"
-    ]
+    "createUpdaterArtifacts": false
   },
   "plugins": {}
 }

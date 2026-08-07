@@ -8,7 +8,7 @@ import { TOOLS, handleToolCall } from "./tools.js";
 
 const server = new Server(
   {
-    name: "cerberus-skills",
+    name: "helix-skills",
     version: "1.0.0",
   },
   {
@@ -39,7 +39,7 @@ async function main() {
   await pluginManager.init();
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Cerberus Skills MCP Server running on stdio");
+  console.error("HELIX Skills MCP Server running on stdio");
 }
 
 main().catch((error) => {

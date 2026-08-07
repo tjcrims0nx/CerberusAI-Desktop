@@ -12,6 +12,23 @@
     </div>
 
     <section v-if="activeTab === 'local'" class="plugin-section">
+      <div v-if="loadError" class="notice error">{{ loadError }}</div>
+
+      <div v-if="restoreMessage" class="notice">{{ restoreMessage }}</div>
+
+      <div v-else-if="hasLegacyBackup" class="notice migration-notice">
+        <div>
+          <strong>Plugin list was migrated.</strong>
+          <span>
+            A stale pre-rebrand "Cerberus Skills" entry was merged into the built-in
+            HELIX Skills server. Your list from before that change was saved.
+          </span>
+        </div>
+        <button class="restore-btn" @click="restoreBackup" :disabled="restoring">
+          {{ restoring ? 'Restoring' : 'Undo migration' }}
+        </button>
+      </div>
+
       <div v-if="plugins.length === 0" class="empty-panel">
         <strong>No local plugins configured.</strong>
         <span>Add a command plugin or load an existing <code>.mcp.json</code> config.</span>
@@ -29,8 +46,8 @@
               <span v-if="isAwesomePlugin(plugin)" class="source-pill">Awesome-Skills</span>
               <span v-if="plugin.verified" class="verify-pill ok">Verified</span>
               <span v-else-if="plugin.verifyError" class="verify-pill error">Verify failed</span>
-              <span :class="['status', isPluginActive(plugin.id) ? 'active' : 'inactive']">
-                {{ isPluginActive(plugin.id) ? 'Connected' : 'Offline' }}
+              <span :class="['status', pluginStatus(plugin).cls]">
+                {{ pluginStatus(plugin).label }}
               </span>
             </div>
             <p class="command">
@@ -102,7 +119,7 @@
         <div>
           <p class="plugin-eyebrow">Remote directory</p>
           <h3>Awesome-Skills Directory</h3>
-          <span>Search awesome-skills.com, pull GitHub repos, and auto-convert plain SKILL.md repos for Cerberus.</span>
+          <span>Search awesome-skills.com, pull GitHub repos, and auto-convert plain SKILL.md repos for HELIX.</span>
         </div>
         <div class="directory-actions">
           <div class="search-box">
@@ -195,6 +212,12 @@ pluginManager.setApiKey(props.apiKey);
 
 const plugins = ref<PluginConfig[]>([]);
 const activePlugins = ref<string[]>([]);
+/** Set when the saved plugin list could not be loaded; shown at the top of the panel. */
+const loadError = ref('');
+/** True once a pre-migration snapshot of the plugin list is on disk to restore from. */
+const hasLegacyBackup = ref(false);
+const restoring = ref(false);
+const restoreMessage = ref('');
 const activeTab = ref<'local' | 'awesome'>('local');
 const awesomeSkills = ref<AwesomeSkill[]>([]);
 const awesomeLoading = ref(false);
@@ -242,16 +265,40 @@ onMounted(async () => {
 
 async function loadSavedPlugins() {
   try {
-    const savedPlugins = await invoke<string | null>("db_get_kv", { key: 'mcp-plugins' });
-    if (savedPlugins) {
-      plugins.value = JSON.parse(savedPlugins);
-    } else {
-      plugins.value = await pluginManager.discoverPlugins();
-      savePlugins();
-    }
+    plugins.value = await pluginManager.loadWithDiscovered();
     updateActivePlugins();
+    hasLegacyBackup.value = await pluginManager.hasLegacyBackup();
   } catch (e) {
-    console.warn("Failed to load MCP plugins", e);
+    console.error("Failed to load MCP plugins", e);
+    loadError.value = `Failed to load plugins: ${e}`;
+  }
+}
+
+/**
+ * Put back the plugin list as it was before the Cerberus→HELIX id migration.
+ *
+ * `loadWithDiscovered` would immediately re-apply the migration on the next
+ * load, so the restored list is emitted to the parent directly rather than
+ * round-tripped through it — the user sees exactly what was snapshotted.
+ */
+async function restoreBackup() {
+  restoring.value = true;
+  try {
+    const restored = await pluginManager.restoreLegacyBackup();
+    if (!restored) {
+      restoreMessage.value = 'No saved plugin list was found to restore.';
+      hasLegacyBackup.value = false;
+      return;
+    }
+    plugins.value = restored;
+    emit('pluginsChanged', restored);
+    updateActivePlugins();
+    hasLegacyBackup.value = false;
+    restoreMessage.value = 'Restored your plugin list from before the migration.';
+  } catch (e) {
+    restoreMessage.value = `Could not restore the saved plugin list: ${e}`;
+  } finally {
+    restoring.value = false;
   }
 }
 
@@ -412,8 +459,26 @@ const isPluginActive = (id: string) => {
   return activePlugins.value.includes(id);
 };
 
+/**
+ * Three-state connection status for a plugin's badge.
+ *
+ * A plugin the user has switched off should read as a calm "Disabled", not a
+ * red "Offline" — the old binary label made every not-yet-enabled server (the
+ * bundled skills server ships disabled) look broken. "Offline" is reserved for
+ * a plugin that is enabled but has no live client, which is the only state that
+ * actually warrants attention.
+ */
+const pluginStatus = (plugin: PluginConfig): { label: string; cls: string } => {
+  if (!plugin.enabled) return { label: 'Disabled', cls: 'idle' };
+  if (isPluginActive(plugin.id)) return { label: 'Connected', cls: 'active' };
+  return { label: 'Offline', cls: 'inactive' };
+};
+
 const isAwesomePlugin = (plugin: PluginConfig) => {
-  return plugin.id.startsWith('awesome_') || !!plugin.cwd?.includes('.CerberusAI');
+  // Match both the current app dir (.HELIX) and the pre-rebrand one
+  // (.CerberusAI): a migrated user's stored plugin config can still carry the
+  // old path string, and this heuristic must keep recognizing those installs.
+  return plugin.id.startsWith('awesome_') || !!plugin.cwd?.includes('.HELIX') || !!plugin.cwd?.includes('.CerberusAI');
 };
 
 const togglePlugin = async (plugin: PluginConfig) => {
@@ -585,6 +650,15 @@ button:disabled {
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
+/* Without this the long `node …\skills-server\dist\index.js` command line — a
+   flex item that defaults to min-width:auto — refuses to shrink and pushes the
+   whole card (and the modal) into a horizontal scroll. min-width:0 lets the
+   command line ellipsize instead. */
+.plugin-info {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .awesome-plugin-card {
   border-color: rgba(52, 211, 153, 0.18);
   background:
@@ -607,7 +681,7 @@ button:disabled {
 }
 
 .command {
-  max-width: min(62vw, 560px);
+  max-width: 100%;
   margin: 7px 0 0;
   color: var(--text-muted);
   font-size: 0.78rem;
@@ -671,6 +745,12 @@ button:disabled {
   color: #fca5a5;
   background: rgba(248, 113, 113, 0.1);
   border: 1px solid rgba(248, 113, 113, 0.24);
+}
+
+.status.idle {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.24);
 }
 
 .plugin-actions {
@@ -985,10 +1065,40 @@ code {
   border-color: rgba(248, 113, 113, 0.38);
 }
 
+.migration-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-color: rgba(234, 179, 8, 0.32);
+  background: rgba(234, 179, 8, 0.07);
+}
+
+.migration-notice strong {
+  display: block;
+  color: #fde68a;
+}
+
+.migration-notice span {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.restore-btn {
+  flex-shrink: 0;
+  color: #fde68a;
+  background: rgba(234, 179, 8, 0.12);
+  border-color: rgba(234, 179, 8, 0.34);
+}
+
 @media (max-width: 760px) {
   .plugin-topbar,
   .directory-toolbar,
-  .plugin-card {
+  .plugin-card,
+  .migration-notice {
     align-items: stretch;
     flex-direction: column;
   }

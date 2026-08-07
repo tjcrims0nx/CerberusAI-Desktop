@@ -6,8 +6,8 @@
 //! routinely trips the desktop's stream timeout and surfaces as
 //! "No response from model — it may still be loading."
 //!
-//! This module sets a small set of safe defaults the very first time Cerberus
-//! Desktop launches on a given machine, then records that fact in the user's
+//! This module sets a small set of safe defaults the very first time HELIX
+//! launches on a given machine, then records that fact in the user's
 //! config directory so we never touch their environment again. Users who set
 //! the variables themselves are detected and respected (we don't overwrite
 //! existing values, only fill in missing ones).
@@ -15,10 +15,9 @@
 use std::path::PathBuf;
 
 /// Marker file so this only runs once per machine. Lives next to chat history
-/// in the standard Cerberus app dir so uninstall + reinstall starts fresh.
+/// in the standard HELIX app dir so uninstall + reinstall starts fresh.
 fn marker_path() -> Option<PathBuf> {
-    let home = dirs::home_dir()?;
-    Some(home.join(".CerberusAI").join(".ollama-tuned"))
+    Some(crate::paths::app_dir_from_home()?.join(".ollama-tuned"))
 }
 
 /// Returns true if the marker indicates we've already tuned. We don't read
@@ -36,7 +35,7 @@ fn write_marker() {
         let _ = std::fs::write(
             &p,
             format!(
-                "tuned by cerberus-desktop v{} at {}",
+                "tuned by helix-desktop v{} at {}",
                 env!("CARGO_PKG_VERSION"),
                 chrono::Utc::now().to_rfc3339()
             ),

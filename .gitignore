@@ -40,3 +40,7 @@ tmp_*
 local_llm_config.txt
 nginx_llm.conf
 patch_v1.js
+
+# One-off diagnostic probes and the engine builds they unpack (~100 MB+).
+# Throwaway by design — the checks worth keeping live in `cargo test`.
+scratch/

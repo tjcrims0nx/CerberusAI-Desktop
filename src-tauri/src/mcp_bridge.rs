@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+use crate::proc::NoWindow;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 // State to hold active MCP child processes
@@ -108,10 +109,88 @@ pub async fn load_mcp_config(path: String) -> Result<Vec<DiscoveredPlugin>, Stri
 }
 
 fn app_plugins_dir(app: &AppHandle) -> PathBuf {
-    app.path()
-        .home_dir()
-        .map(|p| p.join(".CerberusAI").join("plugins"))
-        .unwrap_or_else(|_| PathBuf::from(".").join("plugins"))
+    crate::paths::app_dir(app).join("plugins")
+}
+
+/// Absolute path to the bundled skills server's entry point, if it is present.
+///
+/// The server ships as a bundled resource in installed builds, but during
+/// `tauri dev` the resource directory is the target dir and holds nothing, so
+/// the source tree is checked as well. Returns `None` rather than a guess when
+/// neither exists — the frontend uses that to hide the built-in server instead
+/// of offering the user an entry that could never start.
+fn bundled_skills_server(app: &AppHandle) -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        // Tauri preserves the `../` in a resource glob as an `_up_` segment.
+        candidates.push(
+            resource_dir
+                .join("_up_")
+                .join("skills-server")
+                .join("dist")
+                .join("index.js"),
+        );
+        candidates.push(
+            resource_dir
+                .join("skills-server")
+                .join("dist")
+                .join("index.js"),
+        );
+    }
+
+    // Development: src-tauri/../skills-server.
+    candidates.push(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("skills-server")
+            .join("dist")
+            .join("index.js"),
+    );
+
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(|p| p.canonicalize().unwrap_or(p))
+}
+
+/// Describes the built-in skills server so it can be offered in Plugin Settings.
+///
+/// Reported as `enabled: false`: the server exposes `run_command` and
+/// `write_file`, so it is opted into deliberately rather than switched on for
+/// every model at startup.
+#[tauri::command]
+pub async fn get_bundled_skills_server(app: AppHandle) -> Result<Option<DiscoveredPlugin>, String> {
+    let Some(entry) = bundled_skills_server(&app) else {
+        return Ok(None);
+    };
+
+    let cwd = entry
+        .parent()
+        .and_then(|dist| dist.parent())
+        .map(|dir| dir.display().to_string());
+
+    // Point the server at the same plugins directory `install_awesome_skill`
+    // writes to, so skills installed through the UI are visible to it.
+    let mut env = HashMap::new();
+    env.insert(
+        "HELIX_PLUGINS_DIR".to_string(),
+        app_plugins_dir(&app).display().to_string(),
+    );
+
+    Ok(Some(DiscoveredPlugin {
+        id: "helix-skills".to_string(),
+        name: "HELIX Skills".to_string(),
+        command: Some("node".to_string()),
+        args: Some(vec![entry.display().to_string()]),
+        env: Some(env),
+        url: None,
+        cwd,
+        enabled: Some(false),
+        verified: None,
+        verified_at: None,
+        verify_error: None,
+    }))
 }
 
 fn slug(value: &str) -> String {
@@ -480,7 +559,7 @@ async fn find_skill_files(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), St
 
 async fn write_skill_wrapper(plugin_dir: &Path) -> Result<PathBuf, String> {
     let root = plugin_dir.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
-    let wrapper = plugin_dir.join("cerberus-skill-wrapper.mjs");
+    let wrapper = plugin_dir.join("helix-skill-wrapper.mjs");
     let source = format!(r##"#!/usr/bin/env node
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -506,7 +585,7 @@ function parseSkill(markdown, filePath) {{
   const body = markdown.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "").trim();
   const heading = body.match(/^#\s+(.+)$/m);
   const name = meta.name || (heading ? heading[1].trim() : path.basename(path.dirname(filePath)));
-  const description = meta.description || body.split("\n").find((line) => line.trim() && !line.startsWith("#")) || "Cerberus-compatible converted agent skill.";
+  const description = meta.description || body.split("\n").find((line) => line.trim() && !line.startsWith("#")) || "HELIX-compatible converted agent skill.";
   return {{ name, description: description.slice(0, 480), markdown, filePath }};
 }}
 
@@ -528,7 +607,7 @@ for (const filePath of await walk(root)) {{
   skills.push({{ ...parsed, toolName: "skill_" + slug(parsed.name) }});
 }}
 
-const server = new Server({{ name: "cerberus-converted-skills", version: "1.0.0" }}, {{ capabilities: {{ tools: {{}} }} }});
+const server = new Server({{ name: "helix-converted-skills", version: "1.0.0" }}, {{ capabilities: {{ tools: {{}} }} }});
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({{
   tools: skills.map((skill) => ({{
@@ -549,11 +628,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {{
   if (!skill) throw new Error("Unknown converted skill: " + request.params.name);
   const args = request.params.arguments || {{}};
   const text = [
-    "# Converted Cerberus Skill",
+    "# Converted HELIX Skill",
     "Name: " + skill.name,
     "Source: " + path.relative(root, skill.filePath),
     "",
-    "Use the following skill instructions to complete the user's task inside Cerberus.",
+    "Use the following skill instructions to complete the user's task inside HELIX.",
     "",
     skill.markdown,
     args.prompt ? "\n## User task\n" + args.prompt : "",
@@ -576,7 +655,7 @@ async fn ensure_skill_wrapper_dependencies(plugin_dir: &Path) -> Result<(), Stri
         let name = plugin_dir
             .file_name()
             .and_then(|value| value.to_str())
-            .unwrap_or("cerberus-converted-skill");
+            .unwrap_or("helix-converted-skill");
         let manifest = serde_json::json!({
             "name": name,
             "private": true,
@@ -601,6 +680,7 @@ async fn ensure_skill_wrapper_dependencies(plugin_dir: &Path) -> Result<(), Stri
     let install = Command::new(npm)
         .args(["install", "@modelcontextprotocol/sdk"])
         .current_dir(plugin_dir)
+        .no_window()
         .output()
         .await
         .map_err(|e| format!("Failed to install converted skill dependencies: {}", e))?;
@@ -622,6 +702,7 @@ async fn verify_mcp_plugin(command: &str, args: &[String], cwd: &Path) -> Result
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .no_window()
         .spawn()
         .map_err(|e| format!("Failed to start plugin verifier: {}", e))?;
 
@@ -648,7 +729,7 @@ async fn verify_mcp_plugin(command: &str, args: &[String], cwd: &Path) -> Result
         "params": {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
-            "clientInfo": { "name": "cerberus-plugin-verifier", "version": "1.0.0" }
+            "clientInfo": { "name": "helix-plugin-verifier", "version": "1.0.0" }
         }
     });
     let list = serde_json::json!({
@@ -710,6 +791,7 @@ async fn command_available(command: &str) -> bool {
         .arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .no_window()
         .output()
         .await
         .map(|output| output.status.success())
@@ -723,7 +805,7 @@ async fn download_github_zipball(source: &GitHubSource, target_dir: &Path) -> Re
         source.owner, source.repo, reference
     );
     let client = reqwest::Client::builder()
-        .user_agent(concat!("CerberusDesktop/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("HELIX-Desktop/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| format!("Failed to prepare GitHub downloader: {e}"))?;
     let response = client
@@ -801,7 +883,7 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
 
     if tokio::fs::metadata(&target_dir).await.is_err() {
         let mut clone = Command::new("git");
-        clone.args(["clone", "--depth", "1"]);
+        clone.args(["clone", "--depth", "1"]).no_window();
         if let Some(branch) = &source.branch {
             clone.args(["--branch", branch]);
         }
@@ -857,6 +939,7 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
         let install = Command::new(npm)
             .arg("install")
             .current_dir(&plugin_dir)
+            .no_window()
             .output()
             .await
             .map_err(|e| format!("Failed to run npm install: {}", e))?;
@@ -869,6 +952,7 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
                     let build = Command::new(npm)
                         .args(["run", "build"])
                         .current_dir(&plugin_dir)
+                        .no_window()
                         .output()
                         .await
                         .map_err(|e| format!("Failed to run npm run build: {}", e))?;
@@ -954,7 +1038,8 @@ pub async fn spawn_mcp_server(
     cmd.args(args)
        .stdin(Stdio::piped())
        .stdout(Stdio::piped())
-       .stderr(Stdio::piped());
+       .stderr(Stdio::piped())
+       .no_window();
 
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);

@@ -7,9 +7,13 @@ mod hardware;
 mod model_manager;
 mod tuning;
 mod mcp_bridge;
+mod migrate;
+mod paths;
+mod file_browser;
+mod browser;
 mod provider_manager;
 mod llama_engine;
-mod permission_guard;
+mod proc;
 mod secure_db;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -96,7 +100,7 @@ async fn check_local_ollama() -> model_manager::LocalStatus {
 /// List models available locally (Ollama models + raw .gguf files).
 #[tauri::command]
 async fn list_models(app: tauri::AppHandle) -> Result<Vec<model_manager::ModelInfo>, String> {
-    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = paths::app_dir(&app);
     model_manager::list_local(app_dir).await.map_err(|e| e.to_string())
 }
 
@@ -114,7 +118,7 @@ async fn pull_model(
 ) -> Result<(), String> {
     let (tx, rx) = watch::channel(false);
     *state.0.lock().await = Some(tx);
-    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = paths::app_dir(&app);
     let result = model_manager::pull_model(repo_id, filename, app_dir, on_event, rx).await;
     *state.0.lock().await = None;
     result.map_err(|e| e.to_string())
@@ -132,14 +136,14 @@ async fn cancel_pull(state: tauri::State<'_, PullState>) -> Result<(), String> {
 /// Check if the bundled llama.cpp engine is available and running.
 #[tauri::command]
 async fn engine_status(app: tauri::AppHandle) -> llama_engine::EngineStatus {
-    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = paths::app_dir(&app);
     llama_engine::engine_status(&app_dir).await
 }
 
 /// Download / setup the bundled llama-server engine binary.
 #[tauri::command]
 async fn setup_engine(app: tauri::AppHandle) -> Result<String, String> {
-    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = paths::app_dir(&app);
     let path = llama_engine::find_or_download_llama_server(&app_dir)
         .await
         .map_err(|e| e.to_string())?;
@@ -164,7 +168,7 @@ async fn chat_stream(
 ) -> Result<(), String> {
     let (tx, rx) = watch::channel(false);
     *state.0.lock().await = Some(tx);
-    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = paths::app_dir(&app);
     let result = provider_manager::ProviderManager::route_chat(
         "ollama",
         model,
@@ -191,35 +195,35 @@ async fn cancel_chat(state: tauri::State<'_, ChatState>) -> Result<(), String> {
 /// List all downloaded raw `.gguf` files kept in the local models folder.
 #[tauri::command]
 async fn list_local_ggufs(app: tauri::AppHandle) -> Result<Vec<model_manager::GgufFile>, String> {
-    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = paths::app_dir(&app);
     model_manager::list_local_ggufs(app_dir).await.map_err(|e| e.to_string())
 }
 
 /// Delete a specific downloaded `.gguf` file to free up disk space.
 #[tauri::command]
 async fn delete_local_gguf(filename: String, app: tauri::AppHandle) -> Result<(), String> {
-    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = paths::app_dir(&app);
     model_manager::delete_local_gguf(filename, app_dir).await.map_err(|e| e.to_string())
 }
 
 /// Safely move a `.gguf` file to an arbitrary location.
 #[tauri::command]
 async fn move_local_gguf(filename: String, destination: String, app: tauri::AppHandle) -> Result<(), String> {
-    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = paths::app_dir(&app);
     model_manager::move_local_gguf(filename, destination, app_dir).await.map_err(|e| e.to_string())
 }
 
 /// Import a `.gguf` file from anywhere on disk into the local Ollama instance.
 #[tauri::command]
 async fn import_local_gguf(source_path: String, model_name: String, app: tauri::AppHandle) -> Result<String, String> {
-    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = paths::app_dir(&app);
     model_manager::import_local_gguf(source_path, model_name, app_dir).await.map_err(|e| e.to_string())
 }
 
 /// Activate a `.gguf` file that is already inside the local managed models folder.
 #[tauri::command]
 async fn activate_managed_gguf(filename: String, model_name: String, app: tauri::AppHandle) -> Result<String, String> {
-    let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let app_dir = paths::app_dir(&app);
     model_manager::activate_managed_gguf(filename, model_name, app_dir).await.map_err(|e| e.to_string())
 }
 
@@ -254,6 +258,15 @@ fn detect_hardware() -> HardwareInfo {
 }
 
 #[tauri::command]
+async fn sample_usage() -> Result<hardware::UsageSample, String> {
+    // Refreshing sysinfo touches /proc-equivalents and the PDH query blocks on
+    // the driver, so keep it off the async runtime's worker thread.
+    tokio::task::spawn_blocking(hardware::sample_usage)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 async fn save_text_file(path: String, content: String) -> Result<(), String> {
     tokio::fs::write(&path, content)
         .await
@@ -261,45 +274,18 @@ async fn save_text_file(path: String, content: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn update_app(force: Option<bool>) -> Result<(), String> {
-    // Re-check before spawning: if the GitHub `latest` release isn't actually newer
-    // than the bundled version, refuse — otherwise the bootstrapper would happily
-    // reinstall an older artifact and downgrade the user.
-    if !force.unwrap_or(false) {
-        let info = model_manager::check_update(env!("CARGO_PKG_VERSION"))
-            .await
-            .map_err(|e| e.to_string())?;
-        if !info.available {
-            return Err(format!(
-                "no update available (installed v{}, latest v{})",
-                info.current, info.latest
-            ));
-        }
-    }
-    std::process::Command::new("powershell.exe")
-        .arg("-NoProfile")
-        .arg("-ExecutionPolicy")
-        .arg("Bypass")
-        .arg("-Command")
-        .arg("irm https://cerberusai.dev/get | iex")
-        .spawn()
-        .map_err(|e| e.to_string())?;
-    Ok(())
+fn db_set_kv(key: String, value: String, state: tauri::State<'_, secure_db::SecureDbState>) -> Result<(), String> {
+    state.get()?.set_kv(&key, &value).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn db_set_kv(key: String, value: String, state: tauri::State<'_, secure_db::SecureDb>) -> Result<(), String> {
-    state.set_kv(&key, &value).map_err(|e| e.to_string())
+fn db_get_kv(key: String, state: tauri::State<'_, secure_db::SecureDbState>) -> Result<Option<String>, String> {
+    state.get()?.get_kv(&key).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn db_get_kv(key: String, state: tauri::State<'_, secure_db::SecureDb>) -> Result<Option<String>, String> {
-    state.get_kv(&key).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn db_delete_kv(key: String, state: tauri::State<'_, secure_db::SecureDb>) -> Result<(), String> {
-    state.delete_kv(&key).map_err(|e| e.to_string())
+fn db_delete_kv(key: String, state: tauri::State<'_, secure_db::SecureDbState>) -> Result<(), String> {
+    state.get()?.delete_kv(&key).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -317,6 +303,20 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        // Must be registered before anything that logs. `targets` replaces the
+        // plugin's defaults rather than adding to them — the default set is
+        // [Stdout, LogDir], so appending here would write every line twice.
+        .plugin(
+            tauri_plugin_log::Builder::new()
+                .level(log::LevelFilter::Info)
+                .targets([
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir {
+                        file_name: None,
+                    }),
+                    tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stderr),
+                ])
+                .build(),
+        )
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(mcp_bridge::McpState::new())
@@ -332,10 +332,24 @@ pub fn run() {
                 let _ = window_vibrancy::apply_vibrancy(&window, window_vibrancy::NSVisualEffectMaterial::HudWindow, None, None);
             }
 
-            let app_dir = app.path().home_dir().map(|p| p.join(".CerberusAI")).unwrap_or_else(|_| std::path::PathBuf::from("."));
-            if let Ok(db) = secure_db::SecureDb::new(app_dir) {
-                app.manage(db);
+            let app_dir = paths::app_dir(app);
+
+            // Carry a pre-rename install across before anything opens storage.
+            // A failure here has to stop `SecureDb::new` rather than warn past
+            // it: a missing master key looks exactly like a first run, and the
+            // first run mints a fresh key, which would leave every existing row
+            // encrypted under a key that no longer exists anywhere.
+            let db = app
+                .path()
+                .home_dir()
+                .map_err(anyhow::Error::from)
+                .and_then(|home| migrate::run(&home, &app_dir))
+                .and_then(|()| secure_db::SecureDb::new(app_dir));
+            if let Err(e) = &db {
+                log::error!("Secure storage unavailable, settings will not persist: {e:#}");
             }
+            // Registered even on failure so `db_*` commands can report the cause.
+            app.manage(secure_db::SecureDbState::new(db));
 
             // First-run Ollama tuning (Windows only). No-op after the first
             // successful application; safe to call every launch.
@@ -358,13 +372,13 @@ pub fn run() {
                 let s = model_manager::local_status().await;
                 if s.running {
                     log::info!(
-                        "ollama daemon detected: version={} (cerberus desktop v{})",
+                        "ollama daemon detected: version={} (helix desktop v{})",
                         s.version.as_deref().unwrap_or("unknown"),
                         env!("CARGO_PKG_VERSION")
                     );
                 } else {
                     log::warn!(
-                        "ollama daemon NOT running on startup ({}); cerberus desktop v{}",
+                        "ollama daemon NOT running on startup ({}); helix desktop v{}",
                         s.error.as_deref().unwrap_or("no detail"),
                         env!("CARGO_PKG_VERSION")
                     );
@@ -387,7 +401,7 @@ pub fn run() {
             chat_stream,
             cancel_chat,
             detect_hardware,
-            update_app,
+            sample_usage,
             list_local_ggufs,
             delete_local_gguf,
             move_local_gguf,
@@ -398,11 +412,30 @@ pub fn run() {
             db_get_kv,
             db_delete_kv,
             mcp_bridge::load_mcp_config,
+            mcp_bridge::get_bundled_skills_server,
             mcp_bridge::search_awesome_skills,
             mcp_bridge::install_awesome_skill,
             mcp_bridge::spawn_mcp_server,
             mcp_bridge::send_mcp_message,
             mcp_bridge::kill_mcp_server,
+            file_browser::fb_quick_dirs,
+            file_browser::fb_list_dir,
+            file_browser::fb_read_base64,
+            file_browser::fb_read_text,
+            file_browser::library_list,
+            file_browser::library_save,
+            file_browser::library_import_path,
+            file_browser::library_read_base64,
+            file_browser::library_read_text,
+            file_browser::library_delete,
+            browser::browser_open,
+            browser::browser_back,
+            browser::browser_forward,
+            browser::browser_reload,
+            browser::browser_get_url,
+            browser::browser_close,
+            browser::browser_extract_text,
+            browser::browser_screenshot,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

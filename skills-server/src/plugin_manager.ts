@@ -1,10 +1,11 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import fs from "fs/promises";
+import os from "os";
 import path from "path";
 import { execFile } from "child_process";
 import util from "util";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CallToolResultSchema, ListToolsResultSchema } from "@modelcontextprotocol/sdk/types.js";
 
 const execFileAsync = util.promisify(execFile);
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
@@ -15,14 +16,29 @@ export interface PluginInfo {
     url: string;
 }
 
+/** A `SKILL.md` loaded from disk and exposed as a single MCP tool. */
+interface LoadedSkill {
+    toolName: string;
+    name: string;
+    description: string;
+    markdown: string;
+    filePath: string;
+}
+
 export class PluginManager {
     public clients: Map<string, Client> = new Map();
     public pluginTools: Map<string, any[]> = new Map(); // ClientID -> Tool[]
+    private skills: Map<string, LoadedSkill> = new Map(); // toolName -> skill
     private pluginsDir: string;
-    private wrapperFile = "cerberus-skill-wrapper.mjs";
 
     constructor() {
-        this.pluginsDir = path.join(process.cwd(), "plugins");
+        // The app installs skills under the user's home directory (see
+        // `app_plugins_dir` in src-tauri/src/mcp_bridge.rs, which uses the same
+        // convention). `process.cwd()` is whatever directory the server happened
+        // to be launched from, so resolving against it found nothing.
+        this.pluginsDir =
+            process.env.HELIX_PLUGINS_DIR ||
+            path.join(os.homedir(), ".HELIX", "plugins");
     }
 
     async init() {
@@ -139,104 +155,89 @@ export class PluginManager {
         return found;
     }
 
-    private async writeSkillWrapper(pluginDir: string): Promise<string> {
-        const wrapperPath = path.join(pluginDir, this.wrapperFile);
-        const wrapperSource = `#!/usr/bin/env node
-import fs from "node:fs/promises";
-import path from "node:path";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-
-const root = process.cwd();
-
-function slug(value) {
-  return String(value || "skill")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "")
-    .slice(0, 48) || "skill";
-}
-
-function parseSkill(markdown, filePath) {
-  const frontmatter = markdown.match(/^---\\s*\\n([\\s\\S]*?)\\n---\\s*\\n?/);
-  const meta = {};
-  if (frontmatter) {
-    for (const line of frontmatter[1].split("\\n")) {
-      const match = line.match(/^([A-Za-z0-9_-]+):\\s*(.*)$/);
-      if (match) meta[match[1].toLowerCase()] = match[2].replace(/^["']|["']$/g, "").trim();
+    private slugify(value: string): string {
+        return String(value || "skill")
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "_")
+            .replace(/^_+|_+$/g, "")
+            .slice(0, 48) || "skill";
     }
-  }
-  const body = markdown.replace(/^---\\s*\\n[\\s\\S]*?\\n---\\s*\\n?/, "").trim();
-  const heading = body.match(/^#\\s+(.+)$/m);
-  const name = meta.name || (heading ? heading[1].trim() : path.basename(path.dirname(filePath)));
-  const description = meta.description || body.split("\\n").find((line) => line.trim() && !line.startsWith("#")) || "Cerberus-compatible converted agent skill.";
-  return { name, description: description.slice(0, 480), markdown, filePath };
-}
 
-async function walk(current, found = []) {
-  const entries = await fs.readdir(current, { withFileTypes: true });
-  for (const entry of entries) {
-    if (entry.name === "node_modules" || entry.name === ".git") continue;
-    const fullPath = path.join(current, entry.name);
-    if (entry.isDirectory()) await walk(fullPath, found);
-    else if (entry.isFile() && entry.name.toLowerCase() === "skill.md") found.push(fullPath);
-  }
-  return found;
-}
+    private parseSkill(markdown: string, filePath: string): LoadedSkill {
+        const frontmatter = markdown.match(/^---\s*\n([\s\S]*?)\n---\s*\n?/);
+        const meta: Record<string, string> = {};
+        if (frontmatter) {
+            for (const line of frontmatter[1].split("\n")) {
+                const match = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+                if (match) meta[match[1].toLowerCase()] = match[2].replace(/^["']|["']$/g, "").trim();
+            }
+        }
+        const body = markdown.replace(/^---\s*\n[\s\S]*?\n---\s*\n?/, "").trim();
+        const heading = body.match(/^#\s+(.+)$/m);
+        const name = meta.name || (heading ? heading[1].trim() : path.basename(path.dirname(filePath)));
+        const description =
+            meta.description ||
+            body.split("\n").find((line) => line.trim() && !line.startsWith("#")) ||
+            "HELIX-compatible converted agent skill.";
 
-const skillFiles = await walk(root);
-const skills = [];
-for (const filePath of skillFiles) {
-  const markdown = await fs.readFile(filePath, "utf8");
-  const parsed = parseSkill(markdown, filePath);
-  skills.push({
-    ...parsed,
-    toolName: "skill_" + slug(parsed.name)
-  });
-}
-
-const server = new Server(
-  { name: "cerberus-converted-skills", version: "1.0.0" },
-  { capabilities: { tools: {} } }
-);
-
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: skills.map((skill) => ({
-    name: skill.toolName,
-    description: skill.description,
-    inputSchema: {
-      type: "object",
-      properties: {
-        prompt: { type: "string", description: "The user's current task or question." },
-        context: { type: "string", description: "Optional local context to apply the skill to." }
-      }
+        return {
+            toolName: "skill_" + this.slugify(name),
+            name,
+            description: description.slice(0, 480),
+            markdown,
+            filePath,
+        };
     }
-  }))
-}));
 
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const skill = skills.find((item) => item.toolName === request.params.name);
-  if (!skill) throw new Error("Unknown converted skill: " + request.params.name);
-  const args = request.params.arguments || {};
-  const text = [
-    "# Converted Cerberus Skill",
-    "Name: " + skill.name,
-    "Source: " + path.relative(root, skill.filePath),
-    "",
-    "Use the following skill instructions to complete the user's task inside Cerberus.",
-    "",
-    skill.markdown,
-    args.prompt ? "\\n## User task\\n" + args.prompt : "",
-    args.context ? "\\n## Context\\n" + args.context : ""
-  ].filter(Boolean).join("\\n");
-  return { content: [{ type: "text", text }] };
-});
+    /**
+     * Load every `SKILL.md` under `pluginDir` into this process.
+     *
+     * Skills are plain markdown, so there is nothing to execute — they are read
+     * and served directly rather than by spawning a child MCP server. An earlier
+     * version wrote a generated wrapper script into the plugin directory and ran
+     * it with `node`, but the wrapper imported `@modelcontextprotocol/sdk` and
+     * installed skills have no `node_modules` anywhere up their tree, so it could
+     * only ever fail with ERR_MODULE_NOT_FOUND. Loading in-process also avoids
+     * writing files into the user's plugin directory.
+     *
+     * @returns how many `SKILL.md` files were seen and how many were newly
+     *   registered. These differ whenever a directory holds only skills another
+     *   directory already contributed, which is the normal case: `installPlugin`
+     *   clones the whole source repository per skill, so four installs from
+     *   anthropics/skills produce four identical copies of all of them. Callers
+     *   need `found` to tell "this directory has no skills" apart from "this
+     *   directory's skills were all duplicates" — the first is a load failure,
+     *   the second is success.
+     */
+    private async loadSkillsFrom(pluginDir: string): Promise<{ found: number; added: number }> {
+        const skillFiles = await this.findSkillFiles(pluginDir);
+        let added = 0;
+        for (const filePath of skillFiles) {
+            try {
+                const markdown = await fs.readFile(filePath, "utf-8");
+                const skill = this.parseSkill(markdown, filePath);
 
-await server.connect(new StdioServerTransport());
-`;
-        await fs.writeFile(wrapperPath, wrapperSource, "utf-8");
-        return wrapperPath;
+                // The first copy to claim a name wins; registering every copy
+                // would flood the model with dozens of identical tools. A
+                // genuinely different skill that collides on the slug gets a
+                // numeric suffix so it stays reachable.
+                const existing = this.skills.get(skill.toolName);
+                if (existing) {
+                    if (existing.markdown === skill.markdown) continue;
+                    let toolName = skill.toolName;
+                    for (let n = 2; this.skills.has(toolName); n += 1) {
+                        toolName = `${skill.toolName}_${n}`;
+                    }
+                    this.skills.set(toolName, { ...skill, toolName });
+                } else {
+                    this.skills.set(skill.toolName, skill);
+                }
+                added += 1;
+            } catch (e: any) {
+                console.error(`Failed to read skill ${filePath}: ${e.message}`);
+            }
+        }
+        return { found: skillFiles.length, added };
     }
 
     private async connectPlugin(id: string, command: string, args: string[], cwd: string) {
@@ -248,14 +249,14 @@ await server.connect(new StdioServerTransport());
         });
 
         const client = new Client({
-            name: "cerberus-aggregator",
+            name: "helix-aggregator",
             version: "1.0.0"
         }, {
             capabilities: {}
         });
 
         await client.connect(transport);
-        const toolsResult = await client.request({ method: "tools/list" }, ListToolsRequestSchema) as any;
+        const toolsResult = await client.request({ method: "tools/list" }, ListToolsResultSchema) as any;
         this.clients.set(id, client);
         if (toolsResult && toolsResult.tools) {
             this.pluginTools.set(id, toolsResult.tools);
@@ -263,12 +264,10 @@ await server.connect(new StdioServerTransport());
     }
 
     private async loadPlugin(pluginDir: string, id: string) {
-        // Simple heuristic: if there's a package.json, run `npm start` or find main
-        // Better: just use npx or node directly if we know the entry
-        // For now, let's look for package.json
-        let command = "node";
+        // A real MCP server declares an entry point in package.json and is spawned
+        // as a child process. Anything else is treated as a collection of
+        // `SKILL.md` files and loaded in-process.
         let args: string[] = [];
-        let usingConvertedWrapper = false;
 
         try {
             const pkgPath = path.join(pluginDir, "package.json");
@@ -284,26 +283,25 @@ await server.connect(new StdioServerTransport());
                 throw new Error("No main or bin found in package.json");
             }
         } catch (e) {
-            const skillFiles = await this.findSkillFiles(pluginDir);
-            if (skillFiles.length > 0) {
-                const wrapperPath = await this.writeSkillWrapper(pluginDir);
-                command = "node";
-                args = [wrapperPath];
-                usingConvertedWrapper = true;
-            } else {
-                // Fallback to npx using the directory if package.json failed
-                command = "npx";
-                args = ["-y", "."];
+            const { found, added } = await this.loadSkillsFrom(pluginDir);
+            if (found > 0) {
+                console.error(
+                    `Loaded ${added} new skill(s) from ${id}` +
+                    (added < found ? ` (${found - added} already provided by another plugin)` : "")
+                );
+                return;
             }
+            throw new Error(`${id} has neither an MCP entry point nor any SKILL.md files`);
         }
 
         try {
-            await this.connectPlugin(id, command, args, pluginDir);
+            await this.connectPlugin(id, "node", args, pluginDir);
         } catch (error) {
-            const skillFiles = await this.findSkillFiles(pluginDir);
-            if (!usingConvertedWrapper && skillFiles.length > 0) {
-                const wrapperPath = await this.writeSkillWrapper(pluginDir);
-                await this.connectPlugin(id, "node", [wrapperPath], pluginDir);
+            // The declared entry point failed to start. If the directory also
+            // ships skills, fall back to those rather than losing the plugin.
+            const { found, added } = await this.loadSkillsFrom(pluginDir);
+            if (found > 0) {
+                console.error(`${id} failed to start as an MCP server; loaded ${added} skill(s) instead`);
                 return;
             }
             throw error;
@@ -315,10 +313,40 @@ await server.connect(new StdioServerTransport());
         for (const [id, tools] of this.pluginTools.entries()) {
             allTools = allTools.concat(tools);
         }
+        // Skills loaded in-process are advertised alongside proxied server tools.
+        for (const skill of this.skills.values()) {
+            allTools.push({
+                name: skill.toolName,
+                description: skill.description,
+                inputSchema: {
+                    type: "object",
+                    properties: {
+                        prompt: { type: "string", description: "The user's current task or question." },
+                        context: { type: "string", description: "Optional local context to apply the skill to." }
+                    }
+                }
+            });
+        }
         return allTools;
     }
 
     async proxyCallTool(name: string, args: any): Promise<any> {
+        const skill = this.skills.get(name);
+        if (skill) {
+            const text = [
+                "# HELIX Skill",
+                "Name: " + skill.name,
+                "Source: " + skill.filePath,
+                "",
+                "Use the following skill instructions to complete the user's task.",
+                "",
+                skill.markdown,
+                args?.prompt ? "\n## User task\n" + args.prompt : "",
+                args?.context ? "\n## Context\n" + args.context : ""
+            ].filter(Boolean).join("\n");
+            return { content: [{ type: "text", text }] };
+        }
+
         // Find which client owns this tool
         for (const [id, tools] of this.pluginTools.entries()) {
             if (tools.find(t => t.name === name)) {
@@ -326,7 +354,7 @@ await server.connect(new StdioServerTransport());
                 if (client) {
                     return await client.request(
                         { method: "tools/call", params: { name, arguments: args } },
-                        CallToolRequestSchema
+                        CallToolResultSchema
                     );
                 }
             }
