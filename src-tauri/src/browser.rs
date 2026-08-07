@@ -21,7 +21,8 @@ pub async fn browser_open(url: String, app: AppHandle) -> Result<(), String> {
     }
 
     if let Some(window) = app.get_webview_window(BROWSER_LABEL) {
-        let js = format!("window.location.href = {}", serde_json::to_string(&url).unwrap());
+        let encoded = serde_json::to_string(&url).map_err(|e| format!("Failed to encode URL: {e}"))?;
+        let js = format!("window.location.href = {encoded}");
         window.eval(&js).map_err(|e| format!("Failed to navigate: {e}"))?;
         let _ = window.set_focus();
     } else {
