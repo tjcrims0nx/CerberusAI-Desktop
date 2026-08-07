@@ -8,6 +8,11 @@ updates:
     groups:
       npm-minor-and-patch:
         update-types: ["minor", "patch"]
+    auto-commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    allow:
+      - dependency-type: "all"
 
   - package-ecosystem: "cargo"
     directory: "/src-tauri"
@@ -17,20 +22,36 @@ updates:
     groups:
       cargo-minor-and-patch:
         update-types: ["minor", "patch"]
+    auto-commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    allow:
+      - dependency-type: "all"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    auto-commit-message:
+      prefix: "chore(ci)"
+      include: "scope"
 
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    auto-commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    allow:
+      - dependency-type: "all"
 
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    auto-commit-message:
+      prefix: "chore(docker)"
+      include: "scope"
