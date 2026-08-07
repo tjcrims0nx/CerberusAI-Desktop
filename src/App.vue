@@ -300,8 +300,38 @@ function finalizeMessage(text: string): string {
 // Model Manager (LM Studio-style)
 const showFileManager = ref(false);
 const showFileBrowser = ref(false);
-const showWebBrowser = ref(false);
 const showPluginManager = ref(false);
+const slashIndex = ref<number>(0);
+
+const availableSlashCommands = [
+  { cmd: "/mcp list", desc: "List all configured MCP plugins and connection status" },
+  { cmd: "/mcp open", desc: "Open MCP Plugin Manager modal" },
+  { cmd: "/mcp enable ", desc: "Activate an MCP plugin by name or ID" },
+  { cmd: "/mcp disable ", desc: "Deactivate an MCP plugin by name or ID" },
+  { cmd: "/clear", desc: "Clear active chat conversation" },
+  { cmd: "/help", desc: "Show available slash commands" },
+];
+
+const filteredSlashCommands = computed(() => {
+  const d = draft.value.trim();
+  if (!d.startsWith("/")) return [];
+  const query = d.toLowerCase();
+  return availableSlashCommands.filter(
+    (c) => c.cmd.toLowerCase().startsWith(query) || c.desc.toLowerCase().includes(query)
+  );
+});
+
+const showSlashMenu = computed(() => {
+  return draft.value.startsWith("/") && filteredSlashCommands.value.length > 0;
+});
+
+function selectSlashCommand(cmd: string) {
+  draft.value = cmd;
+  if (!cmd.endsWith(" ")) {
+    send();
+  }
+}
+const showWebBrowser = ref(false);
 
 // The tool call awaiting user approval, and the resolver that the dialog's
 // Allow/Deny buttons complete. Null whenever no dialog is open.
@@ -838,74 +868,103 @@ async function send() {
     }
   }
 
-  if ((!text && attachedImages.value.length === 0) || streaming.value || !activeChat.value || !selectedModel.value) return;
-  if (pulling.value) return;
-  // Accept model if it's in the models list OR is a known local GGUF file
+  if (streaming.value || pulling.value) return;
+
+  // Handle Slash Commands FIRST before model check
+  if (text.startsWith("/")) {
+    if (!activeChat.value) {
+      newChat();
+    }
+    const chat = activeChat.value!;
+
+    if (text.startsWith("/mcp")) {
+      const parts = text.split(" ").filter(Boolean);
+      const subCmd = (parts[1] || "open").toLowerCase();
+      const target = parts.slice(2).join(" ").trim().toLowerCase();
+
+      draft.value = "";
+      attachedImages.value = [];
+      attachedFiles.value = [];
+
+      const userMsg: any = { role: "user", content: text };
+      chat.messages.push(userMsg);
+
+      let systemReply = "";
+
+      if (subCmd === "list") {
+        if (mcpConfigs.value.length === 0) {
+          systemReply = "🔌 **No MCP plugins configured.**\n\nType `/mcp open` or click **MCP Plugins** in the sidebar to add local or remote servers.";
+        } else {
+          const items = mcpConfigs.value.map(p => {
+            const active = pluginManager.activePlugins.includes(p.id);
+            const statusIcon = p.enabled ? (active ? "🟢" : "🟡") : "🔴";
+            const statusLabel = p.enabled ? (active ? "Connected & Ready" : "Connecting...") : "Disabled";
+            const details = p.url ? `URL: \`${p.url}\`` : `Command: \`${p.command} ${(p.args || []).join(" ")}\``;
+            return `${statusIcon} **${p.name}** (\`${p.id}\`)\n  - Status: *${statusLabel}*\n  - ${details}`;
+          }).join("\n\n");
+          systemReply = `🔌 **MCP Plugins (${mcpConfigs.value.length})**\n\n${items}\n\n*Quick Commands:*\n- \`/mcp enable <name|id>\` — Activate a plugin\n- \`/mcp disable <name|id>\` — Deactivate a plugin\n- \`/mcp open\` — Open Plugin Manager modal`;
+        }
+      } else if (subCmd === "enable" || subCmd === "on" || subCmd === "start") {
+        const match = mcpConfigs.value.find(p => p.id.toLowerCase() === target || p.name.toLowerCase().includes(target));
+        if (match) {
+          match.enabled = true;
+          await invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(mcpConfigs.value) });
+          await connectMcpPlugins(mcpConfigs.value);
+          systemReply = `✅ **Activated MCP Plugin:** ${match.name}\n\nConnected to server and tools are ready for chat prompts.`;
+        } else {
+          systemReply = `❌ **Plugin not found matching:** "${target}".\n\nType \`/mcp list\` to view available plugin IDs.`;
+        }
+      } else if (subCmd === "disable" || subCmd === "off" || subCmd === "stop") {
+        const match = mcpConfigs.value.find(p => p.id.toLowerCase() === target || p.name.toLowerCase().includes(target));
+        if (match) {
+          match.enabled = false;
+          await invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(mcpConfigs.value) });
+          await connectMcpPlugins(mcpConfigs.value);
+          systemReply = `🔌 **Deactivated MCP Plugin:** ${match.name}`;
+        } else {
+          systemReply = `❌ **Plugin not found matching:** "${target}".\n\nType \`/mcp list\` to view available plugin IDs.`;
+        }
+      } else if (subCmd === "open" || subCmd === "settings" || subCmd === "gui") {
+        showPluginManager.value = true;
+        systemReply = "⚙️ Opened **MCP Plugin Manager**.";
+      } else {
+        showPluginManager.value = true;
+        systemReply = "ℹ️ **MCP Chat Commands:**\n- `/mcp list` — Show all plugins and connection status\n- `/mcp enable <id>` — Activate a plugin by ID or name\n- `/mcp disable <id>` — Deactivate a plugin\n- `/mcp open` — Open Plugin Manager modal";
+      }
+
+      chat.messages.push({ role: "assistant", content: systemReply });
+      saveChats();
+      await scrollToBottom();
+      return;
+    } else if (text.startsWith("/clear")) {
+      draft.value = "";
+      attachedImages.value = [];
+      attachedFiles.value = [];
+      chat.messages = [];
+      saveChats();
+      return;
+    } else if (text.startsWith("/help")) {
+      draft.value = "";
+      attachedImages.value = [];
+      attachedFiles.value = [];
+      chat.messages.push({ role: "user", content: text });
+      chat.messages.push({
+        role: "assistant",
+        content: "💡 **HELIX Chat Commands:**\n- `/mcp list` — View all MCP plugins and connection status\n- `/mcp open` — Open MCP Plugin Manager modal\n- `/mcp enable <name>` — Activate an MCP plugin\n- `/mcp disable <name>` — Deactivate an MCP plugin\n- `/clear` — Clear active chat messages\n- `/help` — Show this help message"
+      });
+      saveChats();
+      await scrollToBottom();
+      return;
+    }
+  }
+
+  if ((!text && attachedImages.value.length === 0) || !activeChat.value || !selectedModel.value) return;
+
   const modelInList = models.value.some((m) => modelKey(m.name) === modelKey(selectedModel.value));
   const modelIsGguf = localGgufs.value.some((g) => g.name === selectedModel.value || g.name.toLowerCase() === selectedModel.value.toLowerCase());
   if (!modelInList && !modelIsGguf) return;
 
   const chat = activeChat.value;
-
-  if (text.startsWith("/mcp")) {
-    const parts = text.split(" ").filter(Boolean);
-    const subCmd = (parts[1] || "list").toLowerCase();
-    const target = parts.slice(2).join(" ").trim().toLowerCase();
-
-    draft.value = "";
-    attachedImages.value = [];
-    attachedFiles.value = [];
-
-    const userMsg: any = { role: "user", content: text };
-    chat.messages.push(userMsg);
-
-    let systemReply = "";
-
-    if (subCmd === "list") {
-      if (mcpConfigs.value.length === 0) {
-        systemReply = "🔌 **No MCP plugins configured.**\n\nType `/mcp open` or click **MCP Plugins** in the sidebar to add local or remote servers.";
-      } else {
-        const items = mcpConfigs.value.map(p => {
-          const active = pluginManager.activePlugins.includes(p.id);
-          const statusIcon = p.enabled ? (active ? "🟢" : "🟡") : "🔴";
-          const statusLabel = p.enabled ? (active ? "Connected & Ready" : "Connecting...") : "Disabled";
-          const details = p.url ? `URL: \`${p.url}\`` : `Command: \`${p.command} ${(p.args || []).join(" ")}\``;
-          return `${statusIcon} **${p.name}** (\`${p.id}\`)\n  - Status: *${statusLabel}*\n  - ${details}`;
-        }).join("\n\n");
-        systemReply = `🔌 **MCP Plugins (${mcpConfigs.value.length})**\n\n${items}\n\n*Quick Commands:*\n- \`/mcp enable <name|id>\` — Activate a plugin\n- \`/mcp disable <name|id>\` — Deactivate a plugin\n- \`/mcp open\` — Open Plugin Manager modal`;
-      }
-    } else if (subCmd === "enable" || subCmd === "on" || subCmd === "start") {
-      const match = mcpConfigs.value.find(p => p.id.toLowerCase() === target || p.name.toLowerCase().includes(target));
-      if (match) {
-        match.enabled = true;
-        await invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(mcpConfigs.value) });
-        await connectMcpPlugins(mcpConfigs.value);
-        systemReply = `✅ **Activated MCP Plugin:** ${match.name}\n\nConnected to server and tools are ready for chat prompts.`;
-      } else {
-        systemReply = `❌ **Plugin not found matching:** "${target}".\n\nType \`/mcp list\` to view available plugin IDs.`;
-      }
-    } else if (subCmd === "disable" || subCmd === "off" || subCmd === "stop") {
-      const match = mcpConfigs.value.find(p => p.id.toLowerCase() === target || p.name.toLowerCase().includes(target));
-      if (match) {
-        match.enabled = false;
-        await invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(mcpConfigs.value) });
-        await connectMcpPlugins(mcpConfigs.value);
-        systemReply = `🔌 **Deactivated MCP Plugin:** ${match.name}`;
-      } else {
-        systemReply = `❌ **Plugin not found matching:** "${target}".\n\nType \`/mcp list\` to view available plugin IDs.`;
-      }
-    } else if (subCmd === "open" || subCmd === "settings" || subCmd === "gui") {
-      showPluginManager.value = true;
-      systemReply = "⚙️ Opened **MCP Plugin Manager**.";
-    } else {
-      systemReply = "ℹ️ **MCP Chat Commands:**\n- `/mcp list` — Show all plugins and connection status\n- `/mcp enable <id>` — Activate a plugin by ID or name\n- `/mcp disable <id>` — Deactivate a plugin\n- `/mcp open` — Open Plugin Manager modal";
-    }
-
-    chat.messages.push({ role: "assistant", content: systemReply });
-    saveChats();
-    await scrollToBottom();
-    return;
-  }
 
   const userMsg: any = { role: "user", content: text };
   if (attachedImages.value.length > 0) {
@@ -1243,6 +1302,32 @@ async function listHuggingFaceFiles(repoId: string): Promise<HuggingFaceFile[]> 
 }
 
 function onComposerKeydown(e: KeyboardEvent) {
+  if (showSlashMenu.value) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      slashIndex.value = (slashIndex.value + 1) % filteredSlashCommands.value.length;
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      slashIndex.value = (slashIndex.value - 1 + filteredSlashCommands.value.length) % filteredSlashCommands.value.length;
+      return;
+    }
+    if (e.key === "Enter" || e.key === "Tab") {
+      e.preventDefault();
+      const sel = filteredSlashCommands.value[slashIndex.value];
+      if (sel) {
+        selectSlashCommand(sel.cmd);
+      }
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      draft.value = "";
+      return;
+    }
+  }
+
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     send();
@@ -1614,7 +1699,25 @@ onMounted(async () => {
             <button @click="removeFile(idx)" class="remove-btn" style="margin-left: 8px;">✕</button>
           </div>
         </div>
-        <div class="composer-wrapper" style="max-width: 700px; margin: 0 auto; width: 100%;">
+        <div class="composer-wrapper" style="max-width: 700px; margin: 0 auto; width: 100%; position: relative;">
+          <!-- Slash Command Autocomplete Popover -->
+          <div v-if="showSlashMenu" class="slash-menu-popover">
+            <div class="slash-menu-header">Available Commands</div>
+            <div
+              v-for="(cmd, idx) in filteredSlashCommands"
+              :key="cmd.cmd"
+              :class="['slash-menu-item', { active: idx === slashIndex }]"
+              @click="selectSlashCommand(cmd.cmd)"
+              @mouseenter="slashIndex = idx"
+            >
+              <div class="slash-cmd-info">
+                <span class="slash-cmd-title">{{ cmd.cmd }}</span>
+                <span class="slash-cmd-desc">{{ cmd.desc }}</span>
+              </div>
+              <span class="slash-cmd-badge">↵</span>
+            </div>
+          </div>
+
           <div class="composer-inner" style="background: linear-gradient(135deg, #180530 0%, #050505 100%); border: 1px solid rgba(168,85,247,0.15); border-radius: 28px; box-shadow: 0 15px 50px rgba(0,0,0,0.8), inset 0 1px 0 rgba(255,255,255,0.05); padding: 0.8rem 1rem; position: relative; display: flex; align-items: flex-end; gap: 12px; transition: all 0.3s ease;">
             <div class="prism-edge" style="position: absolute; top: 0; left: 0; right: 0; height: 1px; border-radius: 28px 28px 0 0;"></div>
 
@@ -2787,5 +2890,68 @@ onMounted(async () => {
 .attach-menu-item:hover {
   background: rgba(255, 255, 255, 0.08);
   color: #fff;
+}
+
+/* ─── Slash Autocomplete Popover ────────────────────────────────────── */
+.slash-menu-popover {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 0; right: 0;
+  max-width: 700px;
+  margin: 0 auto;
+  background: rgba(18, 10, 32, 0.95);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8), 0 0 20px rgba(147, 51, 234, 0.2);
+  backdrop-filter: blur(24px) saturate(1.4);
+  border-radius: 16px;
+  padding: 8px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.slash-menu-header {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(168, 85, 247, 0.85);
+  padding: 6px 12px 4px 12px;
+}
+.slash-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  background: transparent;
+  border: 1px solid transparent;
+}
+.slash-menu-item.active,
+.slash-menu-item:hover {
+  background: rgba(168, 85, 247, 0.2);
+  border-color: rgba(168, 85, 247, 0.4);
+}
+.slash-cmd-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.slash-cmd-title {
+  font-weight: 700;
+  font-family: monospace;
+  font-size: 0.88rem;
+  color: #fff;
+}
+.slash-cmd-desc {
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.55);
+}
+.slash-cmd-badge {
+  font-size: 0.8rem;
+  color: rgba(168, 85, 247, 0.7);
+  font-weight: 700;
 }
 </style>
