@@ -79,6 +79,9 @@ jobs:
         run: npm ci && npm run build
         working-directory: skills-server
 
+      - name: Build frontend (required by tauri::generate_context!)
+        run: npm run build
+
       - name: Cargo check
         run: cargo check
         working-directory: src-tauri
