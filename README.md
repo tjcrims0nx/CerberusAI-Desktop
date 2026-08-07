@@ -2,8 +2,6 @@
 
 Local-first, 100% private desktop AI chat shell built with Tauri, Rust, Vue 3, and native `llama.cpp` engine.
 
-![HELIX chat dashboard](assets/readme/chat-dashboard.png)
-
 HELIX provides a standalone, private desktop chat environment. Run local GGUF models directly on your hardware without needing external cloud services, API keys, or third-party background daemons.
 
 > [!NOTE]
