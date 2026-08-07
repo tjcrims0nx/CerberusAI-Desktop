@@ -313,15 +313,28 @@ fn flash_attn_takes_value(server_bin: &Path) -> bool {
 }
 
 fn spawn_llama_server(server_bin: &Path, model_path: &Path, ngl: u32) -> Result<Child, anyhow::Error> {
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get().saturating_sub(1).max(1))
+        .unwrap_or(4);
+
     let mut cmd = Command::new(server_bin);
     cmd.arg("-m")
        .arg(model_path)
        .arg("--port")
        .arg(SERVER_PORT.to_string())
        .arg("-c")
-       .arg("4096")
+       .arg("8192")
+       .arg("-b")
+       .arg("2048")
+       .arg("-ub")
+       .arg("512")
+       .arg("-t")
+       .arg(threads.to_string())
        .arg("-ngl")
-       .arg(ngl.to_string());
+       .arg(ngl.to_string())
+       .arg("-np")
+       .arg("1")
+       .arg("--mmap");
 
     if flash_attn_takes_value(server_bin) {
         cmd.arg("-fa").arg("auto");

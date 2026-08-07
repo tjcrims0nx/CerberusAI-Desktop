@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, watch } from "vue";
+import { ref, computed, onMounted, watch } from "vue";
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
@@ -815,11 +815,15 @@ async function sampleUsage() {
   }
 }
 
+let scrollAnimationFrame: number | null = null;
 async function scrollToBottom() {
-  await nextTick();
-  if (messagesEl.value) {
-    messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
-  }
+  if (scrollAnimationFrame) return;
+  scrollAnimationFrame = requestAnimationFrame(() => {
+    scrollAnimationFrame = null;
+    if (messagesEl.value) {
+      messagesEl.value.scrollTop = messagesEl.value.scrollHeight;
+    }
+  });
 }
 
 // API key and cloud auth have been removed
