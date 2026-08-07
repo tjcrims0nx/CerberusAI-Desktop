@@ -1,33 +1,55 @@
-# HELIX Desktop (v0.5.0)
+# HELIX Desktop (v0.6.0)
 
-Local-first, independent desktop AI chat shell built with Tauri, Rust, Vue 3, and native `llama.cpp` engine.
+Local-first, 100% private desktop AI chat shell built with Tauri, Rust, Vue 3, and native `llama.cpp` engine.
 
 ![HELIX chat dashboard](assets/readme/chat-dashboard.png)
 
-HELIX provides a 100% private, standalone desktop chat environment. Run local GGUF models directly on your hardware without needing external services, cloud API keys, or third-party background daemons.
+HELIX provides a standalone, private desktop chat environment. Run local GGUF models directly on your hardware without needing external cloud services, API keys, or third-party background daemons.
 
-> [!WARNING]
-> **Beta Release Notice**: HELIX Desktop v0.5.0 is currently in active Beta. Some features may experience intermittent issues. If you encounter any bugs, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/CerberusAI-Desktop/issues) so they can be reviewed and resolved.
+> [!NOTE]
+> **Release Notice**: HELIX Desktop v0.6.0 is an active local-first release. If you encounter any bugs or feature requests, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/CerberusAI-Desktop/issues).
 
 ---
 
-## ⚡ What's New in v0.5.0
+## ⚡ What's New in v0.6.0
 
-- **Standalone Native `llama-server` Engine**: Built-in, high-performance `llama.cpp` integration with Vulkan GPU acceleration and FlashAttention (`-fa auto`) for 3x faster prompt processing. Zero setup required.
-- **Direct HuggingFace GGUF Search & Parallel Pulls**: Search open-source GGUF models directly from HuggingFace. Downloads use parallel 8-stream chunked requests with automatic resume support.
-- **Accurate Model & File Size Metadata**: Direct parsing of HuggingFace LFS file sizes (`💾 4.2 GB`, `💾 8.5 GB`) across search results and local GGUF cards.
-- **Live Download Progress & In-Modal Banners**: Real-time progress reporting (speed MB/s, ETA, transferred size, active status) floating above all overlays and inside the Model Manager.
-- **Dynamic Model Self-Identity**: Local models automatically recognize their true model architecture and identity (`Qwen3.5`, `Llama 3.3`, `DeepSeek R1/V3`, etc.) instead of generic prompt strings.
-- **Native Windows 11 Fluent Glass UI**: Standardized design system with Acrylic/Mica glass-morphism, smooth `--radius-xl` rounded corners, and purple ambient glow.
-- **Model Context Protocol (MCP) Support**: Built-in MCP plugin system to connect local tools and skills directly to language models.
+- **💻 Professional Code & File Creation**:
+  - Auto-generated language tags (`PYTHON`, `TYPESCRIPT`, `RUST`, `HTML`, `CSS`, `VUE`, `JSON`, `POWERSHELL`, `SQL`, `BASH`) and file extension suggestions (`script.py`, `Component.vue`, `index.html`).
+  - One-click **Copy** button on code blocks with animated feedback (`Copied ✓`).
+  - One-click **Download / Save File** button prompting native Windows File Save Dialog via Tauri (`save_text_file`) or instant blob download.
+
+- **🔌 In-Chat `/mcp` Slash Commands & Composer Menu**:
+  - `/mcp list`: Live status overview of all configured MCP plugins, connection state (🟢 Connected / 🔴 Offline), and endpoints.
+  - `/mcp enable <id>` & `/mcp disable <id>`: Activate or deactivate plugins directly inside chat prompts.
+  - `/mcp open`: Instantly open the Plugin Manager modal.
+  - Quick **MCP Plugins** launcher added inside the composer `+` Attach Menu.
+
+- **🌐 Dual Stdio & SSE MCP Plugin Support**:
+  - Command-based (`stdio`) and URL-based (`SSE`) MCP plugin forms with live toggle tabs in the Plugin Manager.
+  - Real-time **Connected / Offline** badge sync linked directly to active sidecar processes.
+  - Isolated plugin startup error handling so one failing plugin does not block others.
+
+- **📋 Universal Message Copying**:
+  - One-click Copy buttons added to **both User prompts and Assistant responses**.
+
+- **🎨 Dark Metallic Glass Design**:
+  - Standardized Windows 11 Fluent Glassmorphism with Acrylic/Mica glass visual hierarchy across sidebars, action cards, model manager, and chat bubbles.
+  - Persistent welcome dashboard retaining quick suggestion chips on empty chats.
+
+- **⚡ Standalone Native `llama-server` Engine**:
+  - Built-in `llama.cpp` integration with Vulkan GPU acceleration and FlashAttention (`-fa auto`) for 3x faster prompt processing. Zero setup required.
+
+- **📦 HuggingFace GGUF Search & Parallel Chunk Downloads**:
+  - Direct search for open-source GGUF models on HuggingFace.
+  - Multi-threaded 8-stream parallel downloads with resume support and accurate LFS file size metadata (`💾 4.2 GB`, `💾 8.5 GB`).
 
 ---
 
 ## 📦 Latest Stable Release
 
-- **Current Stable:** [v0.5.0](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases/tag/v0.5.0)
+- **Current Stable:** [v0.6.0](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases/tag/v0.6.0)
 - **Windows Installer (NSIS):** `HELIX-Setup.exe`
-- **Windows Installer (MSI):** `HELIX_0.5.0_x64_en-US.msi`
+- **Windows Installer (MSI):** `HELIX_0.6.0_x64_en-US.msi`
 - **Checksums:** `SHA256SUMS.txt`
 
 ---
@@ -36,7 +58,7 @@ HELIX provides a 100% private, standalone desktop chat environment. Run local GG
 
 ### Download & Install
 
-Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.5.0_x64_en-US.msi`) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
+Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.6.0_x64_en-US.msi`) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/CerberusAI-Desktop/releases).
 
 ---
 
@@ -56,7 +78,7 @@ Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.5.0_x64_en-US.msi`)
 ## ✨ Core Features
 
 ### 🖥️ 100% Local & Private
-- Native desktop shell powered by Rust & Tauri.
+- Native desktop shell powered by Rust & Tauri 2.
 - Direct execution via built-in `llama-server` engine.
 - Hardware monitoring displaying real-time CPU, RAM, and VRAM usage.
 - All prompts, chats, and models stay 100% on your machine.
@@ -68,7 +90,8 @@ Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.5.0_x64_en-US.msi`)
 - Active model switching and real-time disk usage analytics.
 
 ### 🔌 Model Context Protocol (MCP)
-- Built-in MCP Plugin Manager.
+- Built-in MCP Plugin Manager supporting stdio binaries & SSE URLs.
+- In-chat `/mcp` slash commands for instant plugin management.
 - Connect filesystem tools, Web APIs, and custom agent skills.
 - Automatic tool calling loop with reasoning trace.
 
