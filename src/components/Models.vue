@@ -599,7 +599,7 @@ function fmtEta(secs?: number): string {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 18px 22px;
+  padding: 14px 22px;
 }
 
 .manager-disk-bar,
@@ -650,17 +650,17 @@ function fmtEta(secs?: number): string {
 
 .manager-list {
   display: grid;
-  gap: 12px;
-  margin-top: 14px;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .model-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 14px 16px;
-  border-radius: 14px;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
@@ -690,17 +690,17 @@ function fmtEta(secs?: number): string {
 }
 
 .model-card-icon {
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  border-radius: 10px;
+  border-radius: 8px;
   color: white;
   background: linear-gradient(135deg, rgba(220, 38, 38, 0.86), rgba(124, 58, 237, 0.74));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
   font-weight: 900;
-  font-size: 0.8rem;
+  font-size: 0.72rem;
 }
 
 .file-icon {
@@ -720,7 +720,7 @@ function fmtEta(secs?: number): string {
   overflow: hidden;
   color: white;
   font-weight: 800;
-  font-size: 0.94rem;
+  font-size: 0.88rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -854,13 +854,14 @@ function fmtEta(secs?: number): string {
 .import-btn,
 .close-modal-btn,
 .model-active-badge {
-  min-height: 36px;
-  padding: 8px 12px;
+  min-height: 32px;
+  padding: 6px 10px;
   border: 1px solid rgba(255, 255, 255, 0.11);
-  border-radius: 11px;
+  border-radius: 9px;
   color: white;
   background: rgba(255, 255, 255, 0.05);
   font-weight: 900;
+  font-size: 0.78rem;
   letter-spacing: 0;
   cursor: pointer;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
@@ -931,10 +932,11 @@ function fmtEta(secs?: number): string {
 }
 
 .manager-footer {
+  flex-shrink: 0;
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  padding: 16px 22px 20px;
+  padding: 14px 22px 16px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(0, 0, 0, 0.18);
 }
