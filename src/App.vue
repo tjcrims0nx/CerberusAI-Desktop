@@ -905,21 +905,30 @@ async function send() {
           systemReply = `🔌 **MCP Plugins (${mcpConfigs.value.length})**\n\n${items}\n\n*Quick Commands:*\n- \`/mcp enable <name|id>\` — Activate a plugin\n- \`/mcp disable <name|id>\` — Deactivate a plugin\n- \`/mcp open\` — Open Plugin Manager modal`;
         }
       } else if (subCmd === "enable" || subCmd === "on" || subCmd === "start") {
-        const match = mcpConfigs.value.find(p => p.id.toLowerCase() === target || p.name.toLowerCase().includes(target));
+        const match = mcpConfigs.value.find(p => p.id.toLowerCase() === target || p.id.toLowerCase().includes(target) || p.name.toLowerCase().includes(target));
         if (match) {
           match.enabled = true;
-          await invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(mcpConfigs.value) });
-          await connectMcpPlugins(mcpConfigs.value);
-          systemReply = `✅ **Activated MCP Plugin:** ${match.name}\n\nConnected to server and tools are ready for chat prompts.`;
+          await invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(mcpConfigs.value) }).catch(console.error);
+          try {
+            await connectMcpPlugins(mcpConfigs.value);
+            systemReply = `✅ **Activated MCP Plugin:** ${match.name}\n\nConnected to server and tools are ready for chat prompts.`;
+          } catch (err: any) {
+            console.warn("MCP plugin connection note:", err);
+            systemReply = `✅ **Activated MCP Plugin:** ${match.name}\n\n*Note:* Server initialization logged: \`${err?.message || err}\``;
+          }
         } else {
           systemReply = `❌ **Plugin not found matching:** "${target}".\n\nType \`/mcp list\` to view available plugin IDs.`;
         }
       } else if (subCmd === "disable" || subCmd === "off" || subCmd === "stop") {
-        const match = mcpConfigs.value.find(p => p.id.toLowerCase() === target || p.name.toLowerCase().includes(target));
+        const match = mcpConfigs.value.find(p => p.id.toLowerCase() === target || p.id.toLowerCase().includes(target) || p.name.toLowerCase().includes(target));
         if (match) {
           match.enabled = false;
-          await invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(mcpConfigs.value) });
-          await connectMcpPlugins(mcpConfigs.value);
+          await invoke("db_set_kv", { key: 'mcp-plugins', value: JSON.stringify(mcpConfigs.value) }).catch(console.error);
+          try {
+            await connectMcpPlugins(mcpConfigs.value);
+          } catch (err) {
+            console.warn("MCP plugin disconnect note:", err);
+          }
           systemReply = `🔌 **Deactivated MCP Plugin:** ${match.name}`;
         } else {
           systemReply = `❌ **Plugin not found matching:** "${target}".\n\nType \`/mcp list\` to view available plugin IDs.`;
