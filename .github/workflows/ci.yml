@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ─── Node: lint, type-check, and MCP smoketest ────────────────────────
+  node:
+    name: Node checks
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install skills-server dependencies
+        run: npm ci
+        working-directory: skills-server
+
+      - name: Build skills-server (tsc)
+        run: npm run build
+        working-directory: skills-server
+
+      - name: TypeScript type-check (skills-server)
+        run: npx tsc --noEmit
+        working-directory: skills-server
+
+      - name: Vue/Vite type-check
+        run: npx vue-tsc --noEmit
+
+      - name: MCP stdio handshake smoketest
+        run: node scratch/mcp-handshake.mjs
+
+  # ─── Rust: cargo check ────────────────────────────────────────────────
+  rust:
+    name: Rust checks
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache Cargo / Tauri target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install npm dependencies (needed for Tauri build)
+        run: npm ci
+
+      - name: Build skills-server (required by tauri resource globs)
+        run: npm ci && npm run build
+        working-directory: skills-server
+
+      - name: Cargo check
+        run: cargo check
+        working-directory: src-tauri
+
+      - name: Cargo clippy (warnings only)
+        run: cargo clippy -- -W warnings
+        working-directory: src-tauri
+        continue-on-error: true
