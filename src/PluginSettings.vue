@@ -2,12 +2,15 @@
   <div class="plugin-settings">
     <div class="plugin-topbar">
       <div>
-        <p class="plugin-eyebrow">MCP control</p>
+        <p class="plugin-eyebrow">MCP Control</p>
         <h2>Plugin Manager</h2>
       </div>
-      <div class="plugin-tabs" role="tablist" aria-label="Plugin manager sections">
-        <button :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">Local Plugins</button>
-        <button :class="{ active: activeTab === 'awesome' }" @click="openAwesomeTab">Awesome-Skills</button>
+      <div class="plugin-topbar-actions">
+        <div class="plugin-tabs" role="tablist" aria-label="Plugin manager sections">
+          <button :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">Local Plugins</button>
+          <button :class="{ active: activeTab === 'awesome' }" @click="openAwesomeTab">Awesome-Skills</button>
+        </div>
+        <button class="modal-close-btn" @click="$emit('close')" title="Close Plugin Manager">✕</button>
       </div>
     </div>
 
@@ -52,8 +55,8 @@
             </div>
             <p class="command">
               <code v-if="plugin.url">{{ plugin.url }}</code>
-              <code v-else-if="isAwesomePlugin(plugin)">{{ plugin.cwd || plugin.command }}</code>
-              <code v-else>{{ plugin.command }} {{ plugin.args ? plugin.args.join(' ') : '' }}</code>
+              <code v-else-if="isAwesomePlugin(plugin)">{{ cleanCommand(plugin.cwd || plugin.command, undefined) }}</code>
+              <code v-else>{{ cleanCommand(plugin.command, plugin.args) }}</code>
             </p>
             <p v-if="plugin.verifyError" class="plugin-verify-error">{{ plugin.verifyError }}</p>
           </div>
@@ -205,6 +208,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   pluginsChanged: [plugins: PluginConfig[]];
+  close: [];
 }>();
 
 const pluginManager = new PluginManager();
@@ -258,6 +262,15 @@ const awesomePluginId = (skill: AwesomeSkill) => {
     .replace(/^_+|_+$/g, '') || 'plugin';
   return `awesome_${slug}`;
 };
+
+function cleanCommand(cmd: string | undefined, args?: string[] | undefined): string {
+  if (!cmd && !args) return '';
+  let full = `${cmd || ''} ${(args || []).join(' ')}`.trim();
+  return full
+    .replace(/\\\\\\?\\/g, '')
+    .replace(/\\\\\?\\/g, '')
+    .replace(/\\\\\?\\/g, '');
+}
 
 onMounted(async () => {
   await loadSavedPlugins();
@@ -557,12 +570,44 @@ const removePlugin = async (id: string) => {
 .plugin-topbar {
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 100;
   display: flex;
   justify-content: space-between;
   gap: 18px;
   align-items: center;
-  padding: 14px 16px;
+  padding: 16px 22px;
+  background: rgba(16, 9, 28, 0.98) !important;
+  border-bottom: 1px solid rgba(168, 85, 247, 0.25) !important;
+  backdrop-filter: blur(24px);
+  margin: -22px -22px 18px -22px;
+}
+
+.plugin-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.modal-close-btn {
+  width: 32px;
+  height: 32px;
+  min-height: 32px !important;
+  padding: 0 !important;
+  border-radius: 8px !important;
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: rgba(255, 255, 255, 0.7) !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.modal-close-btn:hover {
+  background: rgba(239, 68, 68, 0.2) !important;
+  border-color: rgba(239, 68, 68, 0.4) !important;
+  color: #fff !important;
 }
 
 .plugin-eyebrow {
@@ -681,13 +726,26 @@ button:disabled {
 }
 
 .command {
-  max-width: 100%;
-  margin: 7px 0 0;
-  color: var(--text-muted);
-  font-size: 0.78rem;
+  margin: 6px 0 0;
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 0.76rem;
+  font-family: var(--font-mono, monospace);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  max-width: 100%;
+}
+
+.command code {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 4px 10px;
+  border-radius: 6px;
+  color: rgba(224, 185, 255, 0.9);
 }
 
 .status {

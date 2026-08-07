@@ -1496,22 +1496,10 @@ onMounted(async () => {
     </div>
   </div>
 
-  <div v-if="showPluginManager" class="gate-overlay" style="background: rgba(0,0,0,0.72); backdrop-filter: blur(24px) saturate(1.4);">
-    <div class="manager-panel" style="width: min(900px, 92vw); height: min(850px, 88vh);">
-      <div class="manager-header">
-        <div class="manager-title-row">
-          <div style="width: 36px; height: 36px; border-radius: 8px; background: linear-gradient(135deg, rgba(52, 211, 153, 0.85), rgba(5, 150, 105, 0.85)); display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 14px rgba(52,211,153,0.25);">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20"></path><path d="M12 2v20"></path><path d="M20 16a4 4 0 0 0-4-4h-8a4 4 0 0 0-4 4"></path></svg>
-          </div>
-          <div>
-            <h2 class="manager-title" style="letter-spacing: 0.04em;">MCP PLUGINS</h2>
-            <p class="manager-subtitle">Extend HELIX with external capabilities</p>
-          </div>
-          <button class="manager-close" @click="showPluginManager = false">✕</button>
-        </div>
-      </div>
-      <div style="flex: 1; overflow-y: auto; padding: 0;">
-        <PluginSettings :apiKey="apiKey" :activePlugins="activePluginIds" @pluginsChanged="handlePluginsChanged" />
+  <div v-if="showPluginManager" class="gate-overlay" style="background: rgba(0,0,0,0.8); backdrop-filter: blur(24px) saturate(1.4);">
+    <div class="manager-panel" style="width: min(920px, 92vw); height: min(800px, 86vh); display: flex; flex-direction: column; overflow: hidden; border-radius: 20px; border: 1px solid rgba(168,85,247,0.3); box-shadow: 0 24px 70px rgba(0,0,0,0.95); background: #0d0818;">
+      <div style="flex: 1; overflow-y: auto; overflow-x: hidden; padding: 0;">
+        <PluginSettings :apiKey="apiKey" :activePlugins="activePluginIds" @pluginsChanged="handlePluginsChanged" @close="showPluginManager = false" />
       </div>
     </div>
   </div>
