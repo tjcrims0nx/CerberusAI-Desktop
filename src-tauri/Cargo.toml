@@ -56,7 +56,7 @@ windows = { version = "0.62", features = [
 # handler's PCWSTR / Result types are generated against `windows` 0.61 (what
 # webview2-com-sys 0.38.2 pins), so this MUST stay at 0.61 even though the block
 # above uses 0.62 for DXGI — the two coexist under different local names.
-webview2-com = "0.38"
+webview2-com = "0.39"
 windows061 = { package = "windows", version = "0.61", default-features = false }
 # Window screenshot capture for the in-app browser (PrintWindow/GDI under the hood).
 xcap = "0.9"
