@@ -370,10 +370,19 @@ a:hover { color: #d8b4fe; }
   font-weight: 900;
   letter-spacing: 1px;
   box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+  overflow: hidden;
+  background: linear-gradient(135deg, #1a1028 0%, #0d0a14 100%);
+  border: 1px solid rgba(168, 85, 247, 0.25);
+}
+.msg-avatar-logo {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 4px rgba(168, 85, 247, 0.4));
 }
 .msg-avatar.assistant {
-  background: linear-gradient(135deg, #3a3a3a 0%, #1a1a1a 100%);
-  border: 1px solid rgba(255,255,255,0.1);
+  background: linear-gradient(135deg, #1a1028 0%, #0d0a14 100%);
+  border: 1px solid rgba(168, 85, 247, 0.25);
   color: #fff;
 }
 .msg-avatar.user {

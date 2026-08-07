@@ -7,7 +7,7 @@
       :class="{ 'user-row': m.role === 'user' }"
     >
       <div v-if="m.role === 'assistant'" class="msg-avatar">
-        C
+        <img src="/helix-logo.png" alt="HELIX" class="msg-avatar-logo" />
       </div>
       <div class="msg-stack" :class="{ user: m.role === 'user', assistant: m.role === 'assistant' }">
         <div class="msg-bubble" :class="{ user: m.role === 'user', assistant: m.role === 'assistant' }">
