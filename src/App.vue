@@ -936,11 +936,11 @@ async function send() {
       streamingContent.value = LOADING_HINT;
       chat.messages[targetIdx].content = streamingContent.value;
     }
-  }, 8_000);
+  }, 30_000);
   const safetyTimer = setTimeout(() => {
     if (!gotContent && streaming.value) {
       streamingContent.value =
-        "\n\n[error] No response from model after 5 minutes — Ollama may be stuck. Try `ollama ps` to confirm it's loaded, then retry.";
+        "\n\n[error] No response from model after 5 minutes — model engine may be unresponsive. Try re-selecting model or restarting.";
       chat.messages[targetIdx].content = streamingContent.value;
       streaming.value = false;
       saveChats();
@@ -988,6 +988,7 @@ async function send() {
       if (!gotContent) {
         clearTimeout(loadingHintTimer);
         streamingContent.value = "";
+        chat.messages[targetIdx].content = "";
       }
       gotContent = true;
       streamingContent.value += chunk.delta;
