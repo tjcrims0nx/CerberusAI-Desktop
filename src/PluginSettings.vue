@@ -76,44 +76,48 @@
       </div>
 
       <div class="add-plugin">
-        <div class="add-heading">
-          <h3>Add New Plugin</h3>
-          <span>Add a command-based (stdio) or URL-based (SSE) MCP server.</span>
+        <div class="add-heading" @click="showAddForm = !showAddForm" style="cursor: pointer; user-select: none;">
+          <div>
+            <h3>Add New Plugin <span class="chevron" :class="{ open: showAddForm }">▸</span></h3>
+            <span>Add a command-based (stdio) or URL-based (SSE) MCP server.</span>
+          </div>
         </div>
-        <div class="import-section">
-          <input type="text" v-model="mcpConfigPath" placeholder="Path to .mcp.json config file" />
-          <button @click="loadFromConfig" class="btn-primary">Load Config</button>
-        </div>
-        <div class="add-type-tabs">
-          <button :class="{ active: addMode === 'command' }" @click="addMode = 'command'">Command (stdio)</button>
-          <button :class="{ active: addMode === 'url' }" @click="addMode = 'url'">URL (SSE)</button>
-        </div>
-        <form @submit.prevent="addPlugin" class="manual-form" v-if="addMode === 'command'">
-          <div class="form-group">
-            <label>Plugin Name</label>
-            <input v-model="newPlugin.name" placeholder="Local File System" required />
+        <template v-if="showAddForm">
+          <div class="import-section">
+            <input type="text" v-model="mcpConfigPath" placeholder="Path to .mcp.json config file" />
+            <button @click="loadFromConfig" class="btn-primary">Load Config</button>
           </div>
-          <div class="form-group">
-            <label>Command</label>
-            <input v-model="newPlugin.command" placeholder="npx" required />
+          <div class="add-type-tabs">
+            <button :class="{ active: addMode === 'command' }" @click="addMode = 'command'">Command (stdio)</button>
+            <button :class="{ active: addMode === 'url' }" @click="addMode = 'url'">URL (SSE)</button>
           </div>
-          <div class="form-group wide">
-            <label>Arguments (comma-separated)</label>
-            <input v-model="newPluginArgs" placeholder="-y, @modelcontextprotocol/server-filesystem, C:/path" />
-          </div>
-          <button type="submit" class="btn-primary add-btn">Add Plugin</button>
-        </form>
-        <form @submit.prevent="addUrlPlugin" class="manual-form" v-else>
-          <div class="form-group">
-            <label>Plugin Name</label>
-            <input v-model="newPlugin.name" placeholder="Remote MCP Server" required />
-          </div>
-          <div class="form-group wide">
-            <label>SSE Endpoint URL</label>
-            <input v-model="newPluginUrl" placeholder="https://example.com/mcp/sse" required />
-          </div>
-          <button type="submit" class="btn-primary add-btn">Add Plugin</button>
-        </form>
+          <form @submit.prevent="addPlugin" class="manual-form" v-if="addMode === 'command'">
+            <div class="form-group">
+              <label>Plugin Name</label>
+              <input v-model="newPlugin.name" placeholder="Local File System" required />
+            </div>
+            <div class="form-group">
+              <label>Command</label>
+              <input v-model="newPlugin.command" placeholder="npx" required />
+            </div>
+            <div class="form-group wide">
+              <label>Arguments (comma-separated)</label>
+              <input v-model="newPluginArgs" placeholder="-y, @modelcontextprotocol/server-filesystem, C:/path" />
+            </div>
+            <button type="submit" class="btn-primary add-btn">Add Plugin</button>
+          </form>
+          <form @submit.prevent="addUrlPlugin" class="manual-form" v-else>
+            <div class="form-group">
+              <label>Plugin Name</label>
+              <input v-model="newPlugin.name" placeholder="Remote MCP Server" required />
+            </div>
+            <div class="form-group wide">
+              <label>SSE Endpoint URL</label>
+              <input v-model="newPluginUrl" placeholder="https://example.com/mcp/sse" required />
+            </div>
+            <button type="submit" class="btn-primary add-btn">Add Plugin</button>
+          </form>
+        </template>
       </div>
     </section>
 
@@ -239,6 +243,7 @@ const newPlugin = ref({
 const newPluginArgs = ref('');
 const newPluginUrl = ref('');
 const mcpConfigPath = ref('');
+const showAddForm = ref(false);
 
 watch(() => props.apiKey, (key) => {
   pluginManager.setApiKey(key);
@@ -547,7 +552,6 @@ const removePlugin = async (id: string) => {
 
 <style scoped>
 .plugin-settings {
-  min-height: 100%;
   padding: 22px;
   color: var(--text-primary);
   background: transparent;
@@ -677,6 +681,7 @@ button:disabled {
 
 .plugin-section {
   margin-top: 18px;
+  padding-bottom: 8px;
 }
 
 .plugin-list,
@@ -689,8 +694,8 @@ button:disabled {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 18px;
-  padding: 14px;
+  gap: 12px;
+  padding: 12px 14px;
   border-radius: 12px;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
@@ -861,8 +866,8 @@ button:disabled {
 .directory-toolbar,
 .empty-panel,
 .notice {
-  margin-top: 16px;
-  padding: 18px;
+  margin-top: 14px;
+  padding: 14px 18px;
   border-radius: 12px;
 }
 
@@ -924,6 +929,16 @@ button:disabled {
   display: block;
   margin-top: 6px;
   color: var(--text-muted);
+}
+
+.chevron {
+  display: inline-block;
+  font-size: 0.8em;
+  margin-left: 4px;
+  transition: transform 0.2s ease;
+}
+.chevron.open {
+  transform: rotate(90deg);
 }
 
 .import-section,

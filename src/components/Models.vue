@@ -1,7 +1,7 @@
 <template>
   <div class="gate-overlay model-manager-overlay">
     <div class="manager-panel">
-      <!-- Header -->
+      <!-- Header (sticky) -->
       <div class="manager-header">
         <div class="manager-title-row">
           <div class="manager-glyph">
@@ -9,7 +9,7 @@
           </div>
           <div>
             <h2 class="manager-title">MODEL MANAGER</h2>
-            <p class="manager-subtitle">Manage downloaded models & remote pulls</p>
+            <p class="manager-subtitle">Manage downloaded models &amp; remote pulls</p>
           </div>
           <button class="manager-close" @click="$emit('close')">✕</button>
         </div>
@@ -75,138 +75,141 @@
         </div>
       </div>
 
-      <!-- Raw Files Tab -->
-      <div v-if="localManagerTab === 'files'" class="manager-body">
-        <div class="manager-disk-bar">
-          <span class="manager-disk-label">RAW GGUF FILES</span>
-          <span class="manager-disk-value">{{ formatBytes(totalGgufSize) }}</span>
-        </div>
+      <!-- Scrollable Body -->
+      <div class="manager-body">
+        <!-- Raw Files Tab -->
+        <template v-if="localManagerTab === 'files'">
+          <div class="manager-disk-bar">
+            <span class="manager-disk-label">RAW GGUF FILES</span>
+            <span class="manager-disk-value">{{ formatBytes(totalGgufSize) }}</span>
+          </div>
 
-        <p class="manager-hint">
-          Local GGUF models stored in <code>~/.HELIX/models/</code>. Executed directly by the built-in llama engine.
-        </p>
+          <p class="manager-hint">
+            Local GGUF models stored in <code>~/.HELIX/models/</code>. Executed directly by the built-in llama engine.
+          </p>
 
-        <div v-if="filteredGgufs.length === 0" class="manager-empty">
-          <template v-if="localManagerSearch">No files matching "{{ localManagerSearch }}"</template>
-          <template v-else>No local .gguf models found yet. Pull a model from HuggingFace or import a .gguf file.</template>
-        </div>
+          <div v-if="filteredGgufs.length === 0" class="manager-empty">
+            <template v-if="localManagerSearch">No files matching "{{ localManagerSearch }}"</template>
+            <template v-else>No local .gguf models found yet. Pull a model from HuggingFace or import a .gguf file.</template>
+          </div>
 
-        <div v-else class="manager-list">
-          <div v-for="f in filteredGgufs" :key="f.name" class="model-card">
-            <div class="model-card-main">
-              <div class="model-card-icon file-icon">GG</div>
-              <div class="model-card-info">
-                <div class="model-card-name" :title="f.name">{{ f.name }}</div>
-                <div class="model-card-meta">
-                  <span class="model-tag" style="background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.3); font-weight: 700; padding: 3px 9px; border-radius: 6px; font-size: 0.76rem;">💾 {{ formatBytes(f.size) }}</span>
+          <div v-else class="manager-list">
+            <div v-for="f in filteredGgufs" :key="f.name" class="model-card">
+              <div class="model-card-main">
+                <div class="model-card-icon file-icon">GG</div>
+                <div class="model-card-info">
+                  <div class="model-card-name" :title="f.name">{{ f.name }}</div>
+                  <div class="model-card-meta">
+                    <span class="model-tag size-tag">💾 {{ formatBytes(f.size) }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="model-card-actions">
+                <button
+                  class="model-action-btn use"
+                  @click="$emit('update:selectedModel', f.name); $emit('close')"
+                  title="Use this local GGUF model"
+                >USE MODEL</button>
+                <button
+                  class="model-action-btn"
+                  @click="$emit('moveGguf', f.name)"
+                  :disabled="isDeletingGguf"
+                  title="Move to another location"
+                >MOVE</button>
+                <button
+                  class="model-action-btn danger"
+                  @click="$emit('deleteGguf', f.name)"
+                  :disabled="isDeletingGguf"
+                  title="Permanently delete this file from your hard drive"
+                >TRASH FILE</button>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- HuggingFace Tab -->
+        <template v-if="localManagerTab === 'huggingface'">
+          <div class="hf-search-bar">
+            <input
+              v-model="hfSearchQuery"
+              class="manager-search"
+              type="text"
+              placeholder="Search HuggingFace GGUF models (e.g. Qwen, Llama-3, Mistral, DeepSeek)..."
+              spellcheck="false"
+              @keydown.enter="doHfSearch()"
+            />
+            <button class="import-btn hf-search-btn" @click="doHfSearch()" :disabled="hfSearching">
+              {{ hfSearching ? 'SEARCHING…' : 'SEARCH' }}
+            </button>
+          </div>
+
+          <p class="manager-hint">
+            Browse open-source GGUF models directly from HuggingFace. Click a model to reveal download options.
+          </p>
+
+          <div v-if="hfSearching" class="manager-empty">
+            Searching HuggingFace…
+          </div>
+
+          <div v-else-if="hfSearchResults.length === 0" class="manager-empty">
+            No HuggingFace models found yet. Click Search to query models.
+          </div>
+
+          <div v-else class="manager-list">
+            <div v-for="m in hfSearchResults" :key="m.repo_id" class="model-card hf-model-card">
+              <div class="model-card-main hf-card-main" @click="toggleHfRepo(m.repo_id)">
+                <div class="model-card-icon hf-icon">HF</div>
+                <div class="model-card-info hf-card-info">
+                  <div class="model-card-name" :title="m.repo_id">{{ m.repo_id }}</div>
+                  <div class="model-card-meta hf-meta">
+                    <span class="model-tag download-tag">⬇ {{ m.downloads.toLocaleString() }} downloads</span>
+                    <span class="model-tag likes-tag">♥ {{ m.likes.toLocaleString() }} likes</span>
+                    <span v-if="hfRepoFiles[m.repo_id]?.length" class="model-tag files-tag">💾 {{ hfRepoFiles[m.repo_id].length }} GGUF files</span>
+                  </div>
+                </div>
+                <button class="model-action-btn use hf-toggle-btn">
+                  {{ hfExpandedRepo === m.repo_id ? 'HIDE FILES ▲' : 'VIEW FILES ▼' }}
+                </button>
+              </div>
+
+              <!-- Expanded Files -->
+              <div v-if="hfExpandedRepo === m.repo_id" class="hf-files-container">
+                <div v-if="hfLoadingFiles[m.repo_id]" class="manager-hint">Loading GGUF files from HuggingFace…</div>
+                <div v-else-if="!hfRepoFiles[m.repo_id] || hfRepoFiles[m.repo_id].length === 0" class="manager-hint">No .gguf files found in this repository.</div>
+                <div v-else class="quant-grid">
+                  <div v-for="f in hfRepoFiles[m.repo_id]" :key="f.filename" class="quant-card">
+                    <div class="quant-filename" :title="f.filename">
+                      {{ f.filename }}
+                    </div>
+                    <div class="quant-details">
+                      <span>Quant: <strong class="quant-label-hl">{{ f.quant_label }}</strong></span>
+                      <span class="quant-size-pill">
+                        💾 {{ f.size ? formatBytes(f.size) : 'Pending' }}
+                      </span>
+                    </div>
+                    <button
+                      class="model-action-btn use"
+                      :disabled="pulling?.name.startsWith(f.filename.replace(/\.gguf$/i, ''))"
+                      @click.stop="$emit('pullModel', m.repo_id, f.filename)"
+                    >
+                      <template v-if="pulling?.name.startsWith(f.filename.replace(/\.gguf$/i, ''))">PULLING…</template>
+                      <template v-else>PULL {{ f.quant_label }}</template>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
-            <div class="model-card-actions">
-              <button
-                class="model-action-btn use"
-                @click="$emit('update:selectedModel', f.name); $emit('close')"
-                title="Use this local GGUF model"
-              >USE MODEL</button>
-              <button
-                class="model-action-btn"
-                @click="$emit('moveGguf', f.name)"
-                :disabled="isDeletingGguf"
-                title="Move to another location"
-              >MOVE</button>
-              <button
-                class="model-action-btn danger"
-                @click="$emit('deleteGguf', f.name)"
-                :disabled="isDeletingGguf"
-                title="Permanently delete this file from your hard drive"
-              >TRASH FILE</button>
-            </div>
           </div>
-        </div>
+        </template>
       </div>
 
-      <!-- Footer actions -->
+      <!-- Footer (pinned bottom) -->
       <div class="manager-footer">
         <button class="import-btn" @click="$emit('importGguf')" :disabled="isImporting">
           <span v-if="isImporting">IMPORTING…</span>
           <span v-else>⬆ IMPORT LOCAL GGUF</span>
         </button>
         <button class="close-modal-btn" @click="$emit('close')">DONE</button>
-      </div>
-
-      <!-- HuggingFace Tab -->
-      <div v-if="localManagerTab === 'huggingface'" class="manager-body">
-        <div class="hf-search-bar" style="margin-bottom: 16px; display: flex; gap: 10px;">
-          <input
-            v-model="hfSearchQuery"
-            class="manager-search"
-            type="text"
-            placeholder="Search HuggingFace GGUF models (e.g. Qwen, Llama-3, Mistral, DeepSeek)..."
-            spellcheck="false"
-            @keydown.enter="doHfSearch()"
-          />
-          <button class="import-btn" style="white-space: nowrap; padding: 0 20px;" @click="doHfSearch()" :disabled="hfSearching">
-            {{ hfSearching ? 'SEARCHING…' : 'SEARCH' }}
-          </button>
-        </div>
-
-        <p class="manager-hint">
-          Browse open-source GGUF models directly from HuggingFace. Click a model to reveal download options.
-        </p>
-
-        <div v-if="hfSearching" class="manager-empty">
-          Searching HuggingFace…
-        </div>
-
-        <div v-else-if="hfSearchResults.length === 0" class="manager-empty">
-          No HuggingFace models found yet. Click Search to query models.
-        </div>
-
-        <div v-else class="manager-list">
-          <div v-for="m in hfSearchResults" :key="m.repo_id" class="model-card" style="flex-direction: column; align-items: stretch; gap: 12px; padding: 16px;">
-            <div class="model-card-main" style="cursor: pointer; display: flex; align-items: center; width: 100%;" @click="toggleHfRepo(m.repo_id)">
-              <div class="model-card-icon file-icon" style="background: linear-gradient(135deg, #f59e0b, #d97706); flex-shrink: 0;">HF</div>
-              <div class="model-card-info" style="flex: 1; min-width: 0; margin-left: 12px;">
-                <div class="model-card-name" :title="m.repo_id" style="font-weight: 800; font-size: 1rem; color: #f8fafc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ m.repo_id }}</div>
-                <div class="model-card-meta" style="display: flex; gap: 12px; margin-top: 4px; font-size: 0.8rem; align-items: center; flex-wrap: wrap;">
-                  <span class="model-tag" style="color: #fbbf24; background: rgba(251,191,36,0.1); padding: 2px 8px; border-radius: 6px;">⬇ {{ m.downloads.toLocaleString() }} downloads</span>
-                  <span class="model-tag" style="color: #f43f5e; background: rgba(244,63,94,0.1); padding: 2px 8px; border-radius: 6px;">♥ {{ m.likes.toLocaleString() }} likes</span>
-                  <span v-if="hfRepoFiles[m.repo_id]?.length" class="model-tag" style="color: #38bdf8; background: rgba(56,189,248,0.12); padding: 2px 8px; border-radius: 6px; font-weight: 700;">💾 {{ hfRepoFiles[m.repo_id].length }} GGUF files</span>
-                </div>
-              </div>
-              <button class="model-action-btn use" style="margin-left: 12px; flex-shrink: 0;">
-                {{ hfExpandedRepo === m.repo_id ? 'HIDE FILES ▲' : 'VIEW FILES ▼' }}
-              </button>
-            </div>
-
-            <!-- Expanded Files -->
-            <div v-if="hfExpandedRepo === m.repo_id" class="hf-files-container" style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 12px; margin-top: 4px;">
-              <div v-if="hfLoadingFiles[m.repo_id]" class="manager-hint">Loading GGUF files from HuggingFace…</div>
-              <div v-else-if="!hfRepoFiles[m.repo_id] || hfRepoFiles[m.repo_id].length === 0" class="manager-hint">No .gguf files found in this repository.</div>
-              <div v-else class="quant-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px;">
-                <div v-for="f in hfRepoFiles[m.repo_id]" :key="f.filename" class="quant-card" style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 10px; display: flex; flex-direction: column; gap: 8px;">
-                  <div style="font-weight: 700; font-size: 0.84rem; color: #e2e8f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" :title="f.filename">
-                    {{ f.filename }}
-                  </div>
-                  <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.78rem; color: rgba(255,255,255,0.5);">
-                    <span>Quant: <strong style="color: #38bdf8;">{{ f.quant_label }}</strong></span>
-                    <span style="background: rgba(56,189,248,0.12); color: #38bdf8; border: 1px solid rgba(56,189,248,0.25); font-weight: 800; padding: 2px 7px; border-radius: 6px; font-size: 0.74rem;">
-                      💾 {{ f.size ? formatBytes(f.size) : 'Pending' }}
-                    </span>
-                  </div>
-                  <button
-                    class="model-action-btn use"
-                    :disabled="pulling?.name.startsWith(f.filename.replace(/\.gguf$/i, ''))"
-                    @click.stop="$emit('pullModel', m.repo_id, f.filename)"
-                  >
-                    <template v-if="pulling?.name.startsWith(f.filename.replace(/\.gguf$/i, ''))">PULLING…</template>
-                    <template v-else>PULL {{ f.quant_label }}</template>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
       </div>
     </div>
   </div>
@@ -447,30 +450,28 @@ function fmtEta(secs?: number): string {
 
 .model-manager-overlay {
   padding: 24px;
-  background: rgba(0, 0, 0, 0.72);
+  background: rgba(0, 0, 0, 0.8);
   backdrop-filter: blur(24px) saturate(1.4);
 }
 
 .manager-panel {
   width: min(1120px, 94vw);
-  height: min(850px, 88vh);
+  height: min(820px, 86vh);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
-  border: 1px solid var(--glass-border-purp);
-  border-radius: var(--radius-xl);
-  background: var(--bg-frost-deep);
-  box-shadow:
-    0 30px 80px -20px rgba(0, 0, 0, 0.9),
-    inset 0 2px 4px rgba(255, 255, 255, 0.05),
-    inset 0 -2px 6px rgba(0, 0, 0, 0.4),
-    0 0 80px -20px rgba(168, 85, 247, 0.15);
-  backdrop-filter: blur(var(--frost-blur-heavy)) saturate(1.8);
-  will-change: transform, opacity;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  border-radius: 20px;
+  background: #0d0818;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.95);
 }
 
 .manager-header {
+  flex-shrink: 0;
   padding: 18px 22px 14px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid rgba(168, 85, 247, 0.25);
+  background: rgba(16, 9, 28, 0.98);
+  z-index: 10;
 }
 
 .manager-title-row {
@@ -506,18 +507,21 @@ function fmtEta(secs?: number): string {
   margin-left: auto;
   width: 32px;
   height: 32px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
   color: rgba(255, 255, 255, 0.7);
-  background: transparent;
+  background: rgba(255, 255, 255, 0.06);
   cursor: pointer;
-  transition: background var(--duration-fast) ease, color var(--duration-fast) ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
 }
 
 .manager-close:hover {
-  background: #c42b1c;
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.4);
   color: white;
-  border-color: transparent;
 }
 
 .manager-search-row {
@@ -591,8 +595,10 @@ function fmtEta(secs?: number): string {
 }
 
 .manager-body {
-  height: calc(100% - 190px);
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 18px 22px;
 }
 
@@ -652,50 +658,69 @@ function fmtEta(secs?: number): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
-  padding: 15px;
-  border-radius: 16px;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 14px;
   transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .model-card:hover {
-  transform: translateY(-2px);
+  transform: translateY(-1px);
   border-color: rgba(167, 139, 250, 0.4);
-  box-shadow: 0 24px 62px rgba(0, 0, 0, 0.38), 0 0 0 1px rgba(248, 113, 113, 0.12);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+/* HuggingFace cards stack vertically */
+.hf-model-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
 }
 
 .model-card-main {
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 13px;
+  gap: 12px;
+}
+
+.hf-card-main {
+  cursor: pointer;
+  width: 100%;
 }
 
 .model-card-icon {
-  width: 42px;
-  height: 42px;
+  width: 38px;
+  height: 38px;
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  border-radius: 13px;
+  border-radius: 10px;
   color: white;
   background: linear-gradient(135deg, rgba(220, 38, 38, 0.86), rgba(124, 58, 237, 0.74));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
   font-weight: 900;
+  font-size: 0.8rem;
 }
 
 .file-icon {
   background: linear-gradient(135deg, rgba(20, 184, 166, 0.72), rgba(124, 58, 237, 0.64));
 }
 
+.hf-icon {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+}
+
 .model-card-info {
   min-width: 0;
+  flex: 1;
 }
 
 .model-card-name {
   overflow: hidden;
   color: white;
-  font-weight: 900;
+  font-weight: 800;
+  font-size: 0.94rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -704,15 +729,15 @@ function fmtEta(secs?: number): string {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 7px;
+  margin-top: 5px;
 }
 
 .model-tag {
   max-width: min(58vw, 520px);
   overflow: hidden;
-  padding: 4px 8px;
+  padding: 3px 8px;
   border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 999px;
+  border-radius: 6px;
   color: rgba(255, 255, 255, 0.7);
   background: rgba(255, 255, 255, 0.05);
   font-size: 0.74rem;
@@ -720,12 +745,109 @@ function fmtEta(secs?: number): string {
   white-space: nowrap;
 }
 
+.size-tag {
+  background: rgba(168, 85, 247, 0.15);
+  color: #c084fc;
+  border-color: rgba(168, 85, 247, 0.3);
+  font-weight: 700;
+}
+
+.download-tag {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, 0.1);
+  border-color: rgba(251, 191, 36, 0.2);
+}
+
+.likes-tag {
+  color: #f43f5e;
+  background: rgba(244, 63, 94, 0.1);
+  border-color: rgba(244, 63, 94, 0.2);
+}
+
+.files-tag {
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.12);
+  border-color: rgba(56, 189, 248, 0.2);
+  font-weight: 700;
+}
+
+.hf-toggle-btn {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.hf-search-bar {
+  margin-bottom: 14px;
+  display: flex;
+  gap: 10px;
+}
+
+.hf-search-btn {
+  white-space: nowrap;
+  padding: 0 20px;
+}
+
+.hf-files-container {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 12px;
+  margin-top: 10px;
+}
+
+.quant-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+}
+
+.quant-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quant-filename {
+  font-weight: 700;
+  font-size: 0.82rem;
+  color: #e2e8f0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quant-details {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.quant-label-hl {
+  color: #38bdf8;
+}
+
+.quant-size-pill {
+  background: rgba(56, 189, 248, 0.12);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  font-weight: 800;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 0.74rem;
+}
+
 .model-card-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .model-action-btn,
