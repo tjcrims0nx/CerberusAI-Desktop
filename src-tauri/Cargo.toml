@@ -1,6 +1,6 @@
 [package]
 name = "helix-desktop"
-version = "0.6.2"
+version = "0.6.3"
 description = "HELIX — local-first chat dashboard"
 authors = ["HELIX"]
 edition = "2021"

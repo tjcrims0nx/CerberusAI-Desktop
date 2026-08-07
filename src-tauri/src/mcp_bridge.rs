@@ -122,6 +122,25 @@ fn app_plugins_dir(app: &AppHandle) -> PathBuf {
 fn bundled_skills_server(app: &AppHandle) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
 
+    // Executable directory (Windows installer puts _up_ at install root alongside helix-desktop.exe)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(exe_dir) = exe.parent() {
+            candidates.push(
+                exe_dir
+                    .join("_up_")
+                    .join("skills-server")
+                    .join("dist")
+                    .join("index.js"),
+            );
+            candidates.push(
+                exe_dir
+                    .join("skills-server")
+                    .join("dist")
+                    .join("index.js"),
+            );
+        }
+    }
+
     if let Ok(resource_dir) = app.path().resource_dir() {
         // Tauri preserves the `../` in a resource glob as an `_up_` segment.
         candidates.push(
@@ -137,6 +156,21 @@ fn bundled_skills_server(app: &AppHandle) -> Option<PathBuf> {
                 .join("dist")
                 .join("index.js"),
         );
+        if let Some(parent) = resource_dir.parent() {
+            candidates.push(
+                parent
+                    .join("_up_")
+                    .join("skills-server")
+                    .join("dist")
+                    .join("index.js"),
+            );
+            candidates.push(
+                parent
+                    .join("skills-server")
+                    .join("dist")
+                    .join("index.js"),
+            );
+        }
     }
 
     // Development: src-tauri/../skills-server.
