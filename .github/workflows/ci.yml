@@ -46,7 +46,7 @@ jobs:
         run: npx vue-tsc --noEmit
 
       - name: MCP stdio handshake smoketest
-        run: node scratch/mcp-handshake.mjs
+        run: node scripts/mcp-handshake.mjs
 
   # ─── Rust: cargo check ────────────────────────────────────────────────
   rust:
