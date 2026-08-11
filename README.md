@@ -67,10 +67,10 @@ Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.6.8_x64_en-US.msi`)
 ![HELIX chat dashboard](assets/readme/chat-dashboard.png)
 
 ### Model Manager & HuggingFace Pulls
-![HELIX model manager](assets/readme/model-manager.png)
+![HELIX model manager](assets/readme/model-manager.gif)
 
 ### MCP Plugin Manager
-![HELIX MCP plugins](assets/readme/mcp-plugins.png)
+![HELIX MCP plugins](assets/readme/mcp-plugins.gif)
 
 ---
 
@@ -93,6 +93,25 @@ Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.6.8_x64_en-US.msi`)
 - In-chat `/mcp` slash commands for instant plugin management.
 - Connect filesystem tools, Web APIs, and custom agent skills.
 - Automatic tool calling loop with reasoning trace.
+
+#### 🚀 How to Activate & Manage MCP Plugins
+
+1. **Activating Built-in HELIX Skills**:
+   - Open the **Plugin Manager** by clicking **MCP Plugins** in the sidebar or entering `/mcp open` in chat.
+   - Locate the pre-configured **HELIX Skills** card (bundled MCP server providing local file manipulation and tool execution).
+   - Click **Activate** (toggle power button). The status badge will turn 🟢 **Connected**.
+
+2. **In-Chat `/mcp` Slash Commands**:
+   - `/mcp list`: View all configured plugins and connection status.
+   - `/mcp enable <name|id>`: Activate an MCP plugin directly in chat (e.g., `/mcp enable helix-skills`).
+   - `/mcp disable <name|id>`: Deactivate an active MCP plugin.
+   - `/mcp open`: Instantly open the MCP Plugin Manager UI.
+
+3. **Adding Custom MCP Servers**:
+   - **Command (stdio)**: Add local executable/script servers (e.g. `npx`, `python`) with custom CLI arguments.
+   - **URL (SSE)**: Connect to remote Server-Sent Events endpoints (e.g., `https://example.com/mcp/sse`).
+   - **Config Import**: Load existing configuration files by providing the path to a `.mcp.json` file.
+   - **Awesome-Skills Directory**: Search and install community skills from `awesome-skills.com` under the **Awesome-Skills** tab.
 
 ---
 
