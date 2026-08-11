@@ -441,6 +441,57 @@ export class PluginManager {
                 };
             }
         }
-        return merged;
+
+        return this.repairInstalledCommands(merged);
+    }
+
+    /**
+     * Re-derive launch commands for installed plugins that were saved by an
+     * older, buggier detector.
+     *
+     * ai_maestro is the motivating case: it was recorded as `npx -y .`, which
+     * boots its bundled Next.js app rather than the MCP server it ships under
+     * `channels/amp-plugin/`, so it could never connect. The backend re-reads
+     * what is on disk (an `.mcp.json`, a package.json `bin`/`main`, or an
+     * existing skill wrapper) and returns the correct command; we adopt it when
+     * it actually differs. The probe is side-effect-free — it never clones,
+     * runs npm, or regenerates a wrapper — so it is safe to run on every load.
+     *
+     * Only plugins that look installed-from-disk are touched (a stored `cwd`
+     * under the managed plugins dir, or an `awesome_`/`mcp_` id). A user's
+     * hand-added command or a remote URL plugin is left exactly as-is, and any
+     * probe failure falls back to the saved entry rather than dropping it.
+     */
+    private async repairInstalledCommands(configs: PluginConfig[]): Promise<PluginConfig[]> {
+        const isManaged = (p: PluginConfig) =>
+            !p.url &&
+            (p.id.startsWith("awesome_") ||
+                !!p.cwd?.includes(".HELIX") ||
+                !!p.cwd?.includes(".CerberusAI"));
+
+        return Promise.all(
+            configs.map(async config => {
+                if (!isManaged(config)) return config;
+                try {
+                    const launch = await invoke<{ command: string; args: string[]; cwd: string } | null>(
+                        "redetect_plugin_launch",
+                        { pluginDir: config.cwd }
+                    );
+                    if (!launch) return config;
+
+                    const changed =
+                        launch.command !== config.command ||
+                        JSON.stringify(launch.args) !== JSON.stringify(config.args ?? []) ||
+                        launch.cwd !== config.cwd;
+                    if (!changed) return config;
+
+                    console.log(`Repaired launch command for plugin ${config.id}:`, launch);
+                    return { ...config, command: launch.command, args: launch.args, cwd: launch.cwd };
+                } catch (error) {
+                    console.warn(`Could not re-derive launch command for ${config.id}:`, error);
+                    return config;
+                }
+            })
+        );
     }
 }

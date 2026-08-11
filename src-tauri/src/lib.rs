@@ -453,6 +453,7 @@ pub fn run() {
             mcp_bridge::get_bundled_skills_server,
             mcp_bridge::search_awesome_skills,
             mcp_bridge::install_awesome_skill,
+            mcp_bridge::redetect_plugin_launch,
             mcp_bridge::spawn_mcp_server,
             mcp_bridge::send_mcp_message,
             mcp_bridge::kill_mcp_server,

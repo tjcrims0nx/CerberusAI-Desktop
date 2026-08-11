@@ -596,6 +596,194 @@ async fn find_skill_files(dir: &Path, found: &mut Vec<PathBuf>) -> Result<(), St
     Ok(())
 }
 
+/// Locate an `.mcp.json` shipped anywhere inside a cloned plugin repo.
+///
+/// Many upstream MCP servers declare themselves with an `.mcp.json` that names
+/// the exact command to run, rather than exposing a package.json `bin`/`main`.
+/// The file is frequently NOT at the repo root — it sits beside the server it
+/// describes (e.g. `channels/amp-plugin/.mcp.json`). Without this, such a repo
+/// falls through to the `npx -y .` fallback, which runs whatever the root
+/// package happens to be (often a web app), never speaks MCP, and shows Offline.
+///
+/// `node_modules`/`.git` are skipped so a dependency's own `.mcp.json` can't be
+/// mistaken for the plugin's. The shallowest match wins: repos put their own
+/// manifest near the top, and a breadth-first walk reaches it before anything a
+/// vendored sub-package might carry. Returns `None` when the repo ships none.
+async fn find_mcp_config_file(dir: &Path) -> Option<PathBuf> {
+    // Breadth-first so shallower files are found first.
+    let mut queue = std::collections::VecDeque::new();
+    queue.push_back(dir.to_path_buf());
+    while let Some(current) = queue.pop_front() {
+        let mut entries = match tokio::fs::read_dir(&current).await {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        let mut subdirs = Vec::new();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".git" || name == "node_modules" {
+                continue;
+            }
+            match entry.file_type().await {
+                Ok(ft) if ft.is_dir() => subdirs.push(entry.path()),
+                Ok(ft) if ft.is_file() && name.eq_ignore_ascii_case(".mcp.json") => {
+                    return Some(entry.path());
+                }
+                _ => {}
+            }
+        }
+        // Sort for deterministic ordering across platforms/filesystems.
+        subdirs.sort();
+        for sub in subdirs {
+            queue.push_back(sub);
+        }
+    }
+    None
+}
+
+/// Resolve the command + args from an `.mcp.json`, ready to spawn.
+///
+/// Returns the first configured stdio server's `command`/`args` with
+/// `${CLAUDE_PLUGIN_ROOT}` expanded to `plugin_root` (the directory the
+/// `.mcp.json` lives in — the convention upstream repos assume), plus that
+/// directory as the working dir. URL-only entries and entries without a command
+/// are rejected here: this path installs a local stdio sidecar, and a remote
+/// SSE server needs neither a clone nor a spawned process.
+fn command_from_mcp_config(
+    config_path: &Path,
+    content: &str,
+) -> Result<(String, Vec<String>, PathBuf), String> {
+    let config: McpConfigFile = serde_json::from_str(content)
+        .map_err(|e| format!("Failed to parse {}: {}", config_path.display(), e))?;
+
+    let plugin_root = config_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let root_str = plugin_root.to_string_lossy().to_string();
+
+    // Deterministic pick: first server by name, alphabetically, that has a
+    // command. `.mcp.json` almost always declares exactly one.
+    let mut names: Vec<&String> = config.mcp_servers.keys().collect();
+    names.sort();
+
+    for name in names {
+        let server = &config.mcp_servers[name];
+        let Some(command) = server.command.as_ref() else {
+            continue;
+        };
+        let expand = |s: &str| s.replace("${CLAUDE_PLUGIN_ROOT}", &root_str);
+        let command = expand(command);
+        let args = server
+            .args
+            .clone()
+            .unwrap_or_default()
+            .iter()
+            .map(|a| expand(a))
+            .collect();
+        return Ok((command, args, plugin_root));
+    }
+
+    Err(format!(
+        "{} declares no stdio MCP server with a command.",
+        config_path.display()
+    ))
+}
+
+/// How to launch an installed plugin: the resolved command, args, and cwd.
+#[derive(serde::Serialize)]
+pub struct PluginLaunch {
+    pub command: String,
+    pub args: Vec<String>,
+    pub cwd: String,
+}
+
+/// Re-derive how an already-installed plugin should be launched, reading only
+/// what is already on disk — no clone, no `npm`, no wrapper generation.
+///
+/// This lets a plugin installed by an older, buggier detector self-heal on
+/// load: e.g. ai_maestro was saved as `npx -y .` (which boots its Next.js app,
+/// not MCP), but it ships `channels/amp-plugin/.mcp.json` naming the real
+/// server, so this returns that instead. Returns `None` when the directory is
+/// gone or exposes nothing recognizable, so the caller keeps what it had rather
+/// than clobbering a working entry.
+///
+/// Deliberately side-effect-free, because it runs on every load: a SKILL.md
+/// plugin is only re-pointed at its wrapper when that wrapper already exists
+/// (regenerating it, and its `npm install`, is the installer's job), and the
+/// `npx -y .` last-resort fallback is intentionally omitted — a plugin that
+/// legitimately needs it is already saved with it and needs no repair.
+#[tauri::command]
+pub async fn redetect_plugin_launch(plugin_dir: String) -> Result<Option<PluginLaunch>, String> {
+    let dir = PathBuf::from(&plugin_dir);
+    if tokio::fs::metadata(&dir).await.is_err() {
+        return Ok(None);
+    }
+
+    // SKILL.md (HELIX-native) wins — but only re-point at an existing wrapper.
+    let mut skill_files = Vec::new();
+    let _ = find_skill_files(&dir, &mut skill_files).await;
+    if !skill_files.is_empty() {
+        let wrapper = dir.join("helix-skill-wrapper.mjs");
+        if tokio::fs::metadata(&wrapper).await.is_ok() {
+            return Ok(Some(PluginLaunch {
+                command: "node".into(),
+                args: vec![wrapper.to_string_lossy().to_string()],
+                cwd: dir.to_string_lossy().to_string(),
+            }));
+        }
+        return Ok(None);
+    }
+
+    // Nested `.mcp.json` — this is the ai_maestro repair.
+    if let Some(config_path) = find_mcp_config_file(&dir).await {
+        let content = tokio::fs::read_to_string(&config_path)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (command, args, cfg_dir) = command_from_mcp_config(&config_path, &content)?;
+        return Ok(Some(PluginLaunch {
+            command,
+            args,
+            cwd: cfg_dir.to_string_lossy().to_string(),
+        }));
+    }
+
+    // package.json bin/main (read-only). The npx fallback is intentionally not
+    // reproduced here — see the doc comment.
+    let package_json = dir.join("package.json");
+    if let Ok(pkg_text) = tokio::fs::read_to_string(&package_json).await {
+        if let Ok(pkg) = serde_json::from_str::<serde_json::Value>(&pkg_text) {
+            if let Some(bin) = pkg.get("bin") {
+                let bin_path = bin
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        bin.as_object()
+                            .and_then(|o| o.values().next())
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
+                    })
+                    .unwrap_or_default();
+                if !bin_path.is_empty() {
+                    return Ok(Some(PluginLaunch {
+                        command: "node".into(),
+                        args: vec![dir.join(bin_path).to_string_lossy().to_string()],
+                        cwd: dir.to_string_lossy().to_string(),
+                    }));
+                }
+            } else if let Some(main) = pkg.get("main").and_then(|v| v.as_str()) {
+                return Ok(Some(PluginLaunch {
+                    command: "node".into(),
+                    args: vec![dir.join(main).to_string_lossy().to_string()],
+                    cwd: dir.to_string_lossy().to_string(),
+                }));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 async fn write_skill_wrapper(plugin_dir: &Path) -> Result<PathBuf, String> {
     let root = plugin_dir.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
     let wrapper = plugin_dir.join("helix-skill-wrapper.mjs");
@@ -970,7 +1158,23 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
     };
 
     let package_json = plugin_dir.join("package.json");
-    if tokio::fs::metadata(&package_json).await.is_ok() {
+
+    // Decide how this repo exposes its MCP server *before* running any root
+    // npm setup. SKILL.md is the HELIX-native format and wins; failing that, an
+    // upstream `.mcp.json` (even one nested beside the server it describes) is
+    // an explicit declaration and beats package.json guesswork.
+    let mut skill_files = Vec::new();
+    find_skill_files(&plugin_dir, &mut skill_files).await?;
+    let mcp_config = find_mcp_config_file(&plugin_dir).await;
+
+    // Root `npm install` + `npm run build` is meant for a compiled server that
+    // lives at the repo root. Skip it when an `.mcp.json` points elsewhere: that
+    // repo's root may be an unrelated app (a web dashboard, say) whose heavy —
+    // and often failing — build has nothing to do with the sidecar we actually
+    // run, and blocking on it would abort the whole install. SKILL.md and plain
+    // package.json servers keep the existing behavior exactly.
+    let use_mcp_config = skill_files.is_empty() && mcp_config.is_some();
+    if !use_mcp_config && tokio::fs::metadata(&package_json).await.is_ok() {
         let npm = if cfg!(windows) { "npm.cmd" } else { "npm" };
         if !command_available(npm).await {
             return Err("Node.js/npm is required to install this MCP plugin. Install the latest Node.js LTS, then try again.".into());
@@ -1003,8 +1207,11 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
         }
     }
 
-    let mut skill_files = Vec::new();
-    find_skill_files(&plugin_dir, &mut skill_files).await?;
+    // Working directory the server is spawned in. Defaults to the repo root, but
+    // an `.mcp.json`-declared server runs from the directory that file lives in
+    // (that is what `${CLAUDE_PLUGIN_ROOT}` resolves to), so that branch
+    // overrides it.
+    let mut run_dir = plugin_dir.clone();
 
     let (command, args) = if !skill_files.is_empty() {
         if !command_available(if cfg!(windows) { "node.exe" } else { "node" }).await {
@@ -1016,6 +1223,18 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
         ensure_skill_wrapper_dependencies(&plugin_dir).await?;
         let wrapper = write_skill_wrapper(&plugin_dir).await?;
         ("node".to_string(), vec![wrapper.to_string_lossy().to_string()])
+    } else if let Some(config_path) = mcp_config {
+        // The repo ships an `.mcp.json` naming its own server. Prefer it over
+        // the package.json guesswork below: it is the upstream author's explicit
+        // declaration of how to run the thing, and it points at the actual MCP
+        // server even when that lives in a subdirectory of a larger app (the
+        // repo root's package.json may be a web app that never speaks MCP).
+        let content = tokio::fs::read_to_string(&config_path)
+            .await
+            .map_err(|e| format!("Failed to read {}: {}", config_path.display(), e))?;
+        let (command, args, cfg_dir) = command_from_mcp_config(&config_path, &content)?;
+        run_dir = cfg_dir;
+        (command, args)
     } else if tokio::fs::metadata(&package_json).await.is_ok() {
         let pkg_text = tokio::fs::read_to_string(&package_json).await.map_err(|e| e.to_string())?;
         let pkg: serde_json::Value = serde_json::from_str(&pkg_text).map_err(|e| e.to_string())?;
@@ -1042,7 +1261,7 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
         return Err("This repository does not expose package.json or any SKILL.md files to convert.".into());
     };
 
-    let verified = match verify_mcp_plugin(&command, &args, &plugin_dir).await {
+    let verified = match verify_mcp_plugin(&command, &args, &run_dir).await {
         Ok(_) => (Some(true), Some(chrono::Utc::now().to_rfc3339()), None),
         Err(e) => (Some(false), Some(chrono::Utc::now().to_rfc3339()), Some(e)),
     };
@@ -1054,7 +1273,7 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
         args: Some(args),
         env: None,
         url: None,
-        cwd: Some(plugin_dir.to_string_lossy().to_string()),
+        cwd: Some(run_dir.to_string_lossy().to_string()),
         enabled: Some(true),
         verified: verified.0,
         verified_at: verified.1,
@@ -1187,5 +1406,56 @@ pub async fn kill_mcp_server(
         Ok(())
     } else {
         Err(format!("Process {} not found", plugin_id))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mcp_config_expands_plugin_root_and_sets_cwd() {
+        // A nested .mcp.json like ai_maestro's channels/amp-plugin one: the
+        // command runs the sibling server.mjs, and ${CLAUDE_PLUGIN_ROOT} must
+        // resolve to the directory the .mcp.json lives in — not the repo root.
+        let dir = Path::new("/plugins/ai_maestro/channels/amp-plugin");
+        let config_path = dir.join(".mcp.json");
+        let content = r#"{
+            "mcpServers": {
+                "amp": {
+                    "command": "node",
+                    "args": ["${CLAUDE_PLUGIN_ROOT}/server.mjs"]
+                }
+            }
+        }"#;
+
+        let (command, args, cwd) = command_from_mcp_config(&config_path, content).unwrap();
+        assert_eq!(command, "node");
+        assert_eq!(args, vec![format!("{}/server.mjs", dir.to_string_lossy())]);
+        assert_eq!(cwd, dir);
+    }
+
+    #[test]
+    fn mcp_config_picks_first_server_with_a_command_by_name() {
+        // Alphabetical-by-name pick is deterministic; a url-only entry is skipped
+        // because this path spawns a local stdio sidecar.
+        let config_path = Path::new("/p/.mcp.json");
+        let content = r#"{
+            "mcpServers": {
+                "zeta": { "command": "node", "args": ["z.js"] },
+                "alpha": { "url": "https://example.com/sse" }
+            }
+        }"#;
+
+        let (command, args, _) = command_from_mcp_config(config_path, content).unwrap();
+        assert_eq!(command, "node");
+        assert_eq!(args, vec!["z.js".to_string()]);
+    }
+
+    #[test]
+    fn mcp_config_rejects_when_no_stdio_command() {
+        let config_path = Path::new("/p/.mcp.json");
+        let content = r#"{ "mcpServers": { "remote": { "url": "https://x/sse" } } }"#;
+        assert!(command_from_mcp_config(config_path, content).is_err());
     }
 }
