@@ -84,6 +84,13 @@ struct GitHubSource {
 }
 
 /// Reads an .mcp.json file and returns the list of configured MCP servers.
+///
+/// `${CLAUDE_PLUGIN_ROOT}` is expanded in every command/arg/env value to the
+/// directory the config file lives in — the convention `.mcp.json` authors
+/// assume. Without this an imported config comes through with the literal
+/// placeholder and its server fails to spawn. A stdio server (one with a
+/// command) also gets that directory as its `cwd` when it declares none, so a
+/// relative entry point resolves the same way it would for the author.
 #[tauri::command]
 pub async fn load_mcp_config(path: String) -> Result<Vec<DiscoveredPlugin>, String> {
     let content = tokio::fs::read_to_string(&path)
@@ -93,16 +100,42 @@ pub async fn load_mcp_config(path: String) -> Result<Vec<DiscoveredPlugin>, Stri
     let config: McpConfigFile = serde_json::from_str(&content)
         .map_err(|e| format!("Failed to parse JSON in {}: {}", path, e))?;
 
+    let plugin_root = Path::new(&path)
+        .parent()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| ".".to_string());
+
     let mut plugins = Vec::new();
     for (name, server_config) in config.mcp_servers {
+        let command = server_config
+            .command
+            .map(|c| expand_plugin_root(&c, &plugin_root));
+        let args = server_config
+            .args
+            .map(|list| list.iter().map(|a| expand_plugin_root(a, &plugin_root)).collect());
+        let env = server_config.env.map(|map| {
+            map.into_iter()
+                .map(|(k, v)| (k, expand_plugin_root(&v, &plugin_root)))
+                .collect()
+        });
+        // Give a local stdio server the config's own directory as its working
+        // dir when it named none; a remote URL server has no cwd to set.
+        let cwd = server_config.cwd.or_else(|| {
+            if command.is_some() {
+                Some(plugin_root.clone())
+            } else {
+                None
+            }
+        });
+
         plugins.push(DiscoveredPlugin {
             id: format!("mcp_{}", name),
             name,
-            command: server_config.command,
-            args: server_config.args,
-            env: server_config.env,
+            command,
+            args,
+            env,
             url: server_config.url,
-            cwd: server_config.cwd,
+            cwd,
             enabled: None,
             verified: None,
             verified_at: None,
@@ -115,6 +148,13 @@ pub async fn load_mcp_config(path: String) -> Result<Vec<DiscoveredPlugin>, Stri
 
 fn app_plugins_dir(app: &AppHandle) -> PathBuf {
     crate::paths::app_dir(app).join("plugins")
+}
+
+/// Expand the `${CLAUDE_PLUGIN_ROOT}` placeholder that `.mcp.json` files use to
+/// refer to their own directory. Shared by every path that reads an `.mcp.json`
+/// so import, install-from-repo, and on-load repair all resolve it identically.
+fn expand_plugin_root(value: &str, plugin_root: &str) -> String {
+    value.replace("${CLAUDE_PLUGIN_ROOT}", plugin_root)
 }
 
 /// Absolute path to the bundled skills server's entry point, if it is present.
@@ -672,14 +712,13 @@ fn command_from_mcp_config(
         let Some(command) = server.command.as_ref() else {
             continue;
         };
-        let expand = |s: &str| s.replace("${CLAUDE_PLUGIN_ROOT}", &root_str);
-        let command = expand(command);
+        let command = expand_plugin_root(command, &root_str);
         let args = server
             .args
             .clone()
             .unwrap_or_default()
             .iter()
-            .map(|a| expand(a))
+            .map(|a| expand_plugin_root(a, &root_str))
             .collect();
         return Ok((command, args, plugin_root));
     }
@@ -1457,5 +1496,17 @@ mod tests {
         let config_path = Path::new("/p/.mcp.json");
         let content = r#"{ "mcpServers": { "remote": { "url": "https://x/sse" } } }"#;
         assert!(command_from_mcp_config(config_path, content).is_err());
+    }
+
+    #[test]
+    fn expand_plugin_root_replaces_all_occurrences() {
+        let out = expand_plugin_root("${CLAUDE_PLUGIN_ROOT}/a:${CLAUDE_PLUGIN_ROOT}/b", "/root");
+        assert_eq!(out, "/root/a:/root/b");
+    }
+
+    #[test]
+    fn expand_plugin_root_leaves_plain_strings_untouched() {
+        assert_eq!(expand_plugin_root("node", "/root"), "node");
+        assert_eq!(expand_plugin_root("./server.mjs", "/root"), "./server.mjs");
     }
 }
