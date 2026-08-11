@@ -24,6 +24,16 @@ export interface PluginConfig {
 const PLUGINS_KEY = "mcp-plugins";
 
 /**
+ * How long to wait for a plugin's MCP handshake before giving up.
+ *
+ * Well below the SDK's 60s request default: a healthy local server answers
+ * `initialize` in a few hundred ms, so 15s is generous headroom for a cold
+ * `node`/`npx` start while still failing a dead server fast enough that the UI
+ * shows Offline promptly instead of hanging for a minute.
+ */
+const CONNECT_TIMEOUT_MSEC = 15000;
+
+/**
  * Secure-storage key holding a one-time snapshot of the plugin list as it was
  * immediately before the Cerberus→HELIX id migration first rewrote it.
  *
@@ -82,6 +92,14 @@ export class PluginManager {
 
     /**
      * Make active clients match the saved plugin config exactly.
+     *
+     * Enabled plugins are started **concurrently**, not one after another. A
+     * sequential loop meant a single slow — or dead — server blocked every
+     * plugin behind it: `connect()` waits out the SDK's request timeout on a
+     * server that spawned but never answered `initialize` (e.g. a skill whose
+     * wrapper exits on start), and until that settled nothing else even began,
+     * so the whole set showed Offline. Running them in parallel means one bad
+     * plugin only delays itself; the rest connect in their usual few hundred ms.
      */
     async syncPlugins(configs: PluginConfig[]) {
         const enabled = new Set(configs.filter(config => config.enabled).map(config => config.id));
@@ -91,15 +109,15 @@ export class PluginManager {
             }
         }
 
-        for (const config of configs) {
-            if (config.enabled) {
-                try {
-                    await this.startPlugin(config);
-                } catch (error) {
-                    console.warn(`Failed to start plugin ${config.id} (${config.name}):`, error);
-                }
-            }
-        }
+        await Promise.allSettled(
+            configs
+                .filter(config => config.enabled)
+                .map(config =>
+                    this.startPlugin(config).catch(error => {
+                        console.warn(`Failed to start plugin ${config.id} (${config.name}):`, error);
+                    })
+                )
+        );
     }
 
     /**
@@ -132,13 +150,47 @@ export class PluginManager {
         );
 
         try {
-            await client.connect(transport);
+            // Bound the connect. `client.connect` issues an `initialize` request
+            // whose default timeout is 60s; a server that spawns but never
+            // answers (a wrapper that exits on start, a binary that isn't an MCP
+            // server) would otherwise leave this plugin "connecting" for a full
+            // minute. Fail fast instead, and tear the half-open transport down so
+            // its spawned process and IPC listeners don't leak.
+            const connectPromise = client.connect(transport);
+            // If the timeout wins the race the connect promise stays pending and
+            // rejects later (when we close the transport below). Swallow that
+            // late rejection so it doesn't surface as an unhandled rejection.
+            connectPromise.catch(() => {});
+            await this.withTimeout(
+                connectPromise,
+                CONNECT_TIMEOUT_MSEC,
+                `Timed out connecting to plugin ${config.name} after ${CONNECT_TIMEOUT_MSEC}ms`
+            );
             this.clients.set(config.id, client);
             console.log(`Plugin ${config.name} connected successfully.`);
         } catch (error) {
             console.error(`Failed to connect to plugin ${config.name}:`, error);
+            try {
+                await transport.close();
+            } catch (closeError) {
+                console.warn(`Failed to clean up transport for ${config.name}:`, closeError);
+            }
             throw error;
         }
+    }
+
+    /**
+     * Reject with `message` if `promise` has not settled within `ms`.
+     *
+     * The timer is always cleared, whether the promise wins or loses the race,
+     * so a slow-but-eventual connect doesn't leave a dangling handle.
+     */
+    private withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+        let timer: ReturnType<typeof setTimeout>;
+        const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error(message)), ms);
+        });
+        return Promise.race([promise, timeout]).finally(() => clearTimeout(timer)) as Promise<T>;
     }
 
     /**

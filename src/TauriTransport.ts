@@ -11,6 +11,8 @@ export class TauriTransport implements Transport {
     private pluginId: string;
     private unlistenStdout: UnlistenFn | null = null;
     private unlistenStderr: UnlistenFn | null = null;
+    private unlistenClose: UnlistenFn | null = null;
+    private closed = false;
 
     onclose?: () => void;
     onerror?: (error: Error) => void;
@@ -52,6 +54,19 @@ export class TauriTransport implements Transport {
             }
         );
 
+        // The backend emits `mcp-close` when the child's stdout pipe ends, i.e.
+        // the process exited. Surface it as a transport error so the SDK rejects
+        // any pending request — a server that dies mid-handshake fails now
+        // instead of after the 60s request timeout.
+        this.unlistenClose = await listen<{plugin_id: string}>(
+            "mcp-close",
+            (event) => {
+                if (event.payload.plugin_id === this.pluginId) {
+                    this.handleClose();
+                }
+            }
+        );
+
         // Spawn the server process via Rust backend
         try {
             await invoke("spawn_mcp_server", {
@@ -77,13 +92,24 @@ export class TauriTransport implements Transport {
         }
     }
 
-    async close(): Promise<void> {
-        try {
-            await invoke("kill_mcp_server", { pluginId: this.pluginId });
-        } catch (error) {
-            console.error(`Failed to kill MCP server ${this.pluginId}:`, error);
-        }
+    /**
+     * The backend reported the child process exited. Notify the SDK exactly
+     * once — `onerror` unblocks a pending request (the handshake), `onclose`
+     * marks the transport dead — then drop our listeners so a later `close()`
+     * from the client is a no-op. Guarded by `closed` so a normal shutdown and
+     * an unexpected exit can't both fire the callbacks.
+     */
+    private handleClose() {
+        if (this.closed) return;
+        this.closed = true;
 
+        this.unlistenListeners();
+
+        this.onerror?.(new Error(`MCP server ${this.pluginId} exited`));
+        this.onclose?.();
+    }
+
+    private unlistenListeners() {
         if (this.unlistenStdout) {
             this.unlistenStdout();
             this.unlistenStdout = null;
@@ -92,6 +118,23 @@ export class TauriTransport implements Transport {
             this.unlistenStderr();
             this.unlistenStderr = null;
         }
+        if (this.unlistenClose) {
+            this.unlistenClose();
+            this.unlistenClose = null;
+        }
+    }
+
+    async close(): Promise<void> {
+        if (this.closed) return;
+        this.closed = true;
+
+        try {
+            await invoke("kill_mcp_server", { pluginId: this.pluginId });
+        } catch (error) {
+            console.error(`Failed to kill MCP server ${this.pluginId}:`, error);
+        }
+
+        this.unlistenListeners();
 
         this.onclose?.();
     }

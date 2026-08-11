@@ -33,6 +33,11 @@ struct McpErrorPayload {
     error: String,
 }
 
+#[derive(Clone, serde::Serialize)]
+struct McpClosePayload {
+    plugin_id: String,
+}
+
 #[derive(serde::Deserialize)]
 struct McpConfigFile {
     #[serde(rename = "mcpServers")]
@@ -1094,8 +1099,15 @@ pub async fn spawn_mcp_server(
 
     let plugin_id_out = plugin_id.clone();
     let plugin_id_err = plugin_id.clone();
+    let plugin_id_close = plugin_id.clone();
 
-    // Spawn a task to read stdout and emit to frontend
+    // Spawn a task to read stdout and emit to frontend. When the pipe closes —
+    // which happens as soon as the child exits — the loop ends and we emit a
+    // one-shot `mcp-close` so the transport can reject any in-flight request
+    // (e.g. the `initialize` handshake) instead of waiting out the SDK's 60s
+    // timeout. A server that spawns but immediately dies (a wrapper that exits
+    // on start, a binary that isn't an MCP server) is thus reported Offline at
+    // once rather than hanging the whole plugin sync.
     let app_handle_out = app.clone();
     tokio::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
@@ -1108,6 +1120,12 @@ pub async fn spawn_mcp_server(
                 },
             );
         }
+        let _ = app_handle_out.emit(
+            "mcp-close",
+            McpClosePayload {
+                plugin_id: plugin_id_close.clone(),
+            },
+        );
     });
 
     // Spawn a task to read stderr and emit to frontend
