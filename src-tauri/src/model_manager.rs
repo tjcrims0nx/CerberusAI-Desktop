@@ -996,31 +996,11 @@ pub async fn pull_model(
         ..Default::default()
     });
 
-    if which_ollama().await.is_some() && local_status().await.running {
-        let modelfile_path = final_path.with_extension("Modelfile");
-        let path_str = final_path.to_string_lossy().replace('\\', "/");
-        let modelfile_content = format!("FROM \"{}\"\n", path_str);
-        if tokio::fs::write(&modelfile_path, modelfile_content).await.is_ok() {
-            let result = tokio::process::Command::new("ollama")
-                .arg("create")
-                .arg(&ollama_model_name)
-                .arg("-f")
-                .arg(&modelfile_path)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .no_window()
-                .output()
-                .await;
-            let _ = tokio::fs::remove_file(&modelfile_path).await;
-            match result {
-                Ok(o) if o.status.success() => {
-                    log::info!("Model also registered in Ollama as '{}'", ollama_model_name);
-                }
-                _ => {
-                    log::warn!("Could not register in Ollama (non-fatal), model available as local GGUF");
-                }
-            }
-        }
+    match try_register_in_ollama(&final_path, &ollama_model_name).await {
+        Ok(()) => log::info!("Model also registered in Ollama as '{}'", ollama_model_name),
+        Err(reason) => log::warn!(
+            "Could not register in Ollama (non-fatal, model available as local GGUF): {reason}"
+        ),
     }
 
     let _ = out.send(PullProgress {
@@ -1350,8 +1330,12 @@ pub async fn delete_local_gguf(filename: String, app_dir: std::path::PathBuf) ->
     let file_path = models_dir.join(&filename);
     
     if file_path.exists() {
-        tokio::fs::remove_file(file_path).await?;
-        
+        tokio::fs::remove_file(&file_path).await?;
+
+        // Remove the sibling Modelfile older builds could leave next to the model,
+        // so deleting a GGUF doesn't strand a file pointing at it.
+        let _ = tokio::fs::remove_file(file_path.with_extension("Modelfile")).await;
+
         // Try to clean up empty parent directories if any
         if let Some(parent) = std::path::Path::new(&filename).parent() {
             let _ = tokio::fs::remove_dir(models_dir.join(parent)).await; // Will fail silently if not empty, which is intended
@@ -1389,75 +1373,261 @@ pub async fn move_local_gguf(filename: String, destination: String, app_dir: std
     Ok(())
 }
 
-/// Import an arbitrary `.gguf` file from the user's filesystem into Ollama.
-/// The file is moved into the local models directory, a Modelfile is created,
-/// and `ollama create <model_name> -f <Modelfile>` is run to register it.
+/// Best-effort registration of a GGUF into Ollama.
+///
+/// Never fatal. A `.gguf` sitting in `~/.HELIX/models/` is already fully usable:
+/// `list_models` surfaces it and `llama_engine::ensure_server` runs it on the bundled
+/// `llama-server`. Ollama is a convenience, not a requirement, so callers treat the
+/// `Err` string purely as a human-readable note to pass along to the user.
+async fn try_register_in_ollama(
+    gguf_path: &std::path::Path,
+    model_name: &str,
+) -> Result<(), String> {
+    if which_ollama().await.is_none() {
+        return Err("the `ollama` CLI was not found on PATH".to_string());
+    }
+    if !local_status().await.running {
+        return Err("the Ollama daemon isn't running on 127.0.0.1:11434".to_string());
+    }
+    // `ollama create` reports a missing FROM file as "400 Bad Request: invalid model name",
+    // which sends users chasing a naming problem that doesn't exist. Check it ourselves so
+    // the real cause is what gets reported.
+    if tokio::fs::metadata(gguf_path).await.is_err() {
+        return Err(format!("{} is missing", gguf_path.display()));
+    }
+
+    // Write the Modelfile outside the models dir so a failure can never leave litter there.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let modelfile_path =
+        std::env::temp_dir().join(format!("helix-{}-{unique}.Modelfile", std::process::id()));
+
+    let content = format!(
+        "FROM \"{}\"\n",
+        gguf_path.to_string_lossy().replace('\\', "/")
+    );
+    tokio::fs::write(&modelfile_path, content)
+        .await
+        .map_err(|e| format!("could not write a temporary Modelfile: {e}"))?;
+
+    let result = tokio::process::Command::new("ollama")
+        .arg("create")
+        .arg(model_name)
+        .arg("-f")
+        .arg(&modelfile_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .no_window()
+        .output()
+        .await;
+
+    // Clean up *before* inspecting the result, so no early return can leak the file.
+    if let Err(e) = tokio::fs::remove_file(&modelfile_path).await {
+        log::warn!(
+            "Could not remove temporary Modelfile {}: {e}",
+            modelfile_path.display()
+        );
+    }
+
+    match result {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            Err(if stderr.is_empty() {
+                format!("`ollama create` exited with {}", o.status)
+            } else {
+                stderr
+            })
+        }
+        Err(e) => Err(format!("could not start the `ollama` CLI: {e}")),
+    }
+}
+
+/// Remove stray `*.Modelfile` entries from the models directory.
+///
+/// Modelfiles are transient scratch files written to the temp dir by
+/// `try_register_in_ollama`, so anything left in `models/` is litter from an older
+/// build that leaked them on failure. Best-effort: errors are logged, never fatal.
+async fn sweep_orphan_modelfiles(models_dir: &std::path::Path) {
+    let Ok(mut entries) = tokio::fs::read_dir(models_dir).await else {
+        return;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) == Some("Modelfile") {
+            if let Err(e) = tokio::fs::remove_file(&path).await {
+                log::warn!("Could not remove stale Modelfile {}: {e}", path.display());
+            } else {
+                log::info!("Removed stale Modelfile {}", path.display());
+            }
+        }
+    }
+}
+
+/// Case-insensitive `.gguf` extension check. `pull_model` already accepts `.GGUF`
+/// filenames, so imports must too.
+fn has_gguf_extension(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("gguf"))
+}
+
+/// True only when both paths resolve to the same *existing* file.
+///
+/// Deliberately not `canonicalize().unwrap_or_default()`: a destination that doesn't
+/// exist yet fails to canonicalize, and comparing two defaulted empty paths would call
+/// them equal — which used to make the copy silently skip.
+fn is_same_existing_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => false,
+    }
+}
+
+/// Pick a destination in `models_dir` that won't clobber a different existing model:
+/// `name.gguf`, then `name-2.gguf`, `name-3.gguf`, …
+fn unique_dest_path(models_dir: &std::path::Path, filename: &str) -> std::path::PathBuf {
+    let candidate = models_dir.join(filename);
+    if !candidate.exists() {
+        return candidate;
+    }
+    let as_path = std::path::Path::new(filename);
+    let stem = as_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("model");
+    let ext = as_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("gguf");
+    for n in 2..=999 {
+        let candidate = models_dir.join(format!("{stem}-{n}.{ext}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    models_dir.join(format!("{stem}-{}.{ext}", std::process::id()))
+}
+
+/// Copy `src` to `dest`, verifying the whole file arrived.
+///
+/// On any failure the partial destination is removed. The source is never modified —
+/// that is the whole point: an import must not be able to lose the user's model.
+async fn copy_into_models_dir(
+    src: &std::path::Path,
+    dest: &std::path::Path,
+    expected_len: u64,
+) -> Result<(), anyhow::Error> {
+    let copied = match tokio::fs::copy(src, dest).await {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(dest).await;
+            return Err(anyhow::anyhow!(
+                "Could not copy into {}: {e}. Your original file was left untouched.",
+                dest.display()
+            ));
+        }
+    };
+    if copied != expected_len {
+        let _ = tokio::fs::remove_file(dest).await;
+        return Err(anyhow::anyhow!(
+            "Copy was incomplete ({copied} of {expected_len} bytes) — is the disk full? \
+             Your original file was left untouched."
+        ));
+    }
+    // Clear the mark-of-the-web, mirroring the download path.
+    #[cfg(windows)]
+    {
+        let zone_file = format!("{}:Zone.Identifier", dest.display());
+        let _ = std::fs::remove_file(zone_file);
+    }
+    Ok(())
+}
+
+/// Import an arbitrary `.gguf` file from the user's filesystem.
+///
+/// The file is **copied** into `~/.HELIX/models/` — the user's original is always left
+/// where they put it. Registering the result in Ollama is best-effort: the copy is
+/// runnable by HELIX's built-in engine either way, so a missing or sleeping Ollama
+/// never fails the import.
 pub async fn import_local_gguf(
     source_path: String,
     model_name: String,
     app_dir: std::path::PathBuf,
 ) -> Result<String, anyhow::Error> {
     let src = std::path::Path::new(&source_path);
-    if !src.exists() {
-        return Err(anyhow::anyhow!("File not found: {}", source_path));
+    let src_meta = tokio::fs::metadata(src)
+        .await
+        .map_err(|e| anyhow::anyhow!("Cannot read {source_path}: {e}"))?;
+    if !src_meta.is_file() {
+        return Err(anyhow::anyhow!("Not a file: {source_path}"));
     }
-    if src.extension().and_then(|s| s.to_str()) != Some("gguf") {
+    if !has_gguf_extension(src) {
         return Err(anyhow::anyhow!("Only .gguf files can be imported"));
     }
 
     let models_dir = app_dir.join("models");
     tokio::fs::create_dir_all(&models_dir).await?;
 
-    let filename = src.file_name().unwrap_or_default();
-    let dest_path = models_dir.join(filename);
+    // Clear litter left by older builds that leaked Modelfiles into models/.
+    sweep_orphan_modelfiles(&models_dir).await;
 
-    // Move the file into the managed models directory if it's not already there
-    if src.canonicalize().unwrap_or_default() != dest_path.canonicalize().unwrap_or_default()
-        && tokio::fs::rename(src, &dest_path).await.is_err()
-    {
-        // Fallback to copy+delete if rename fails (e.g., cross-drive move)
-        tokio::fs::copy(src, &dest_path).await?;
-        tokio::fs::remove_file(src).await?;
-    }
+    let filename = src
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| anyhow::anyhow!("Unsupported filename: {source_path}"))?
+        .to_string();
 
-    // Normalise the path for the Modelfile
-    let path_str = dest_path.to_string_lossy().replace('\\', "/");
+    // If the picked file already *is* the managed copy, don't copy it over itself.
+    let already_managed = is_same_existing_file(src, &models_dir.join(&filename));
+    let dest_path = if already_managed {
+        models_dir.join(&filename)
+    } else {
+        let dest = unique_dest_path(&models_dir, &filename);
+        copy_into_models_dir(src, &dest, src_meta.len()).await?;
+        dest
+    };
 
-    let modelfile_path = models_dir.join(format!("{}.Modelfile", model_name));
+    let note = match try_register_in_ollama(&dest_path, &model_name).await {
+        Ok(()) => format!("Registered in Ollama as '{model_name}'."),
+        Err(reason) => {
+            log::warn!("Ollama registration skipped for '{model_name}': {reason}");
+            format!(
+                "Ollama registration was skipped ({reason}), but the model still runs on \
+                 HELIX's built-in engine."
+            )
+        }
+    };
 
-    // Ollama automatically extracts the correct chat template and stop tokens
-    // directly from the GGUF file's metadata. Do not hardcode ChatML.
-    let modelfile_content = format!("FROM \"{}\"\n", path_str);
+    let placement = if already_managed {
+        "It was already in your models folder.".to_string()
+    } else {
+        format!(
+            "Copied to {}\nYour original file was left in place.",
+            dest_path.display()
+        )
+    };
 
-    tokio::fs::write(&modelfile_path, &modelfile_content).await?;
-
-    let output = tokio::process::Command::new("ollama")
-        .arg("create")
-        .arg(&model_name)
-        .arg("-f")
-        .arg(&modelfile_path)
-        .no_window()
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to start `ollama` CLI: {e}. Is Ollama in your PATH?"))?;
-
-    let _ = tokio::fs::remove_file(&modelfile_path).await;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("ollama create failed: {}", stderr));
-    }
-
-    Ok(format!("Successfully imported {} as '{}'", source_path, model_name))
+    Ok(format!(
+        "Imported {}.\n\n{placement}\n{note}",
+        dest_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&filename)
+    ))
 }
 
 /// Activate a `.gguf` file that is already stored in the managed models directory.
+///
+/// "Activate" means registering it with Ollama, which is best-effort for the same reason
+/// as import: the file is already runnable by HELIX's built-in engine, so a missing or
+/// sleeping Ollama is reported as a note rather than failing the action.
 pub async fn activate_managed_gguf(
     filename: String,
     model_name: String,
     app_dir: std::path::PathBuf,
 ) -> Result<String, anyhow::Error> {
-    if !filename.ends_with(".gguf") || filename.contains("..") {
+    if !has_gguf_extension(std::path::Path::new(&filename)) || filename.contains("..") {
         return Err(anyhow::anyhow!("Invalid filename"));
     }
 
@@ -1468,30 +1638,16 @@ pub async fn activate_managed_gguf(
         return Err(anyhow::anyhow!("File not found in managed storage"));
     }
 
-    let path_str = dest_path.to_string_lossy().replace('\\', "/");
-    let modelfile_path = models_dir.join(format!("{}.Modelfile", model_name));
-    let modelfile_content = format!("FROM \"{}\"\n", path_str);
-
-    tokio::fs::write(&modelfile_path, &modelfile_content).await?;
-
-    let output = tokio::process::Command::new("ollama")
-        .arg("create")
-        .arg(&model_name)
-        .arg("-f")
-        .arg(&modelfile_path)
-        .no_window()
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to start `ollama` CLI: {e}. Is Ollama in your PATH?"))?;
-
-    let _ = tokio::fs::remove_file(&modelfile_path).await;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(anyhow::anyhow!("ollama create failed: {}", stderr));
+    match try_register_in_ollama(&dest_path, &model_name).await {
+        Ok(()) => Ok(format!("Activated {filename} in Ollama as '{model_name}'.")),
+        Err(reason) => {
+            log::warn!("Ollama registration skipped for '{model_name}': {reason}");
+            Ok(format!(
+                "{filename} is ready to use on HELIX's built-in engine.\n\n\
+                 Registering it with Ollama was skipped ({reason})."
+            ))
+        }
     }
-
-    Ok(format!("Successfully activated {} as '{}'", filename, model_name))
 }
 
 /// Delete a model from the local Ollama instance via the HTTP API.
@@ -1508,4 +1664,182 @@ pub async fn delete_ollama_model(name: &str) -> Result<(), anyhow::Error> {
         return Err(anyhow::anyhow!("ollama delete returned {status}: {text}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    /// A throwaway app dir with a `models/` subfolder. Named per test rather than
+    /// randomised, and cleared on the way in, so a crashed run leaves nothing that
+    /// poisons the next one. Matches how the engine and migrate tests get scratch space.
+    fn scratch_app_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("helix-models-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("models")).expect("temp dir");
+        dir
+    }
+
+    #[test]
+    fn gguf_extension_check_is_case_insensitive() {
+        // A `.GGUF` download used to be rejected outright by import.
+        assert!(has_gguf_extension(Path::new("model.gguf")));
+        assert!(has_gguf_extension(Path::new("model.GGUF")));
+        assert!(has_gguf_extension(Path::new("model.GgUf")));
+        assert!(!has_gguf_extension(Path::new("model.bin")));
+        assert!(!has_gguf_extension(Path::new("model")));
+    }
+
+    #[test]
+    fn unique_dest_path_avoids_clobbering_a_different_model() {
+        let app_dir = scratch_app_dir("unique-dest");
+        let models = app_dir.join("models");
+
+        // Nothing there yet: keep the original name.
+        assert_eq!(
+            unique_dest_path(&models, "m-Q4_K_M.gguf"),
+            models.join("m-Q4_K_M.gguf")
+        );
+
+        // Occupied: step aside instead of overwriting.
+        std::fs::write(models.join("m-Q4_K_M.gguf"), b"first").unwrap();
+        assert_eq!(
+            unique_dest_path(&models, "m-Q4_K_M.gguf"),
+            models.join("m-Q4_K_M-2.gguf")
+        );
+
+        std::fs::write(models.join("m-Q4_K_M-2.gguf"), b"second").unwrap();
+        assert_eq!(
+            unique_dest_path(&models, "m-Q4_K_M.gguf"),
+            models.join("m-Q4_K_M-3.gguf")
+        );
+    }
+
+    #[test]
+    fn same_existing_file_is_false_when_paths_cannot_resolve() {
+        let app_dir = scratch_app_dir("same-file");
+        let real = app_dir.join("models").join("real.gguf");
+        std::fs::write(&real, b"x").unwrap();
+
+        assert!(is_same_existing_file(&real, &real));
+        // Two nonexistent paths must NOT compare equal — the bug that made the copy
+        // silently skip and left the Modelfile pointing at a file never created.
+        assert!(!is_same_existing_file(
+            &app_dir.join("nope-a.gguf"),
+            &app_dir.join("nope-b.gguf")
+        ));
+        assert!(!is_same_existing_file(&real, &app_dir.join("nope-a.gguf")));
+    }
+
+    #[tokio::test]
+    async fn copy_preserves_the_source_file() {
+        let app_dir = scratch_app_dir("copy-preserves");
+        let src = app_dir.join("downloaded.gguf");
+        std::fs::write(&src, b"pretend weights").unwrap();
+        let dest = app_dir.join("models").join("downloaded.gguf");
+
+        copy_into_models_dir(&src, &dest, b"pretend weights".len() as u64)
+            .await
+            .expect("copy should succeed");
+
+        // The whole point: importing must never remove the user's file.
+        assert!(src.exists(), "source must survive an import");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"pretend weights");
+    }
+
+    #[tokio::test]
+    async fn copy_leaves_no_partial_file_when_length_is_wrong() {
+        let app_dir = scratch_app_dir("copy-partial");
+        let src = app_dir.join("truncated.gguf");
+        std::fs::write(&src, b"short").unwrap();
+        let dest = app_dir.join("models").join("truncated.gguf");
+
+        // Claim a larger expected size, as a disk-full copy would produce.
+        let err = copy_into_models_dir(&src, &dest, 999_999)
+            .await
+            .expect_err("mismatched length must fail");
+
+        assert!(err.to_string().contains("incomplete"), "got: {err}");
+        assert!(!dest.exists(), "partial copy must be cleaned up");
+        assert!(src.exists(), "source must survive a failed import");
+    }
+
+    #[tokio::test]
+    async fn sweep_removes_stray_modelfiles_but_keeps_models() {
+        let app_dir = scratch_app_dir("sweep");
+        let models = app_dir.join("models");
+        std::fs::write(models.join("keep.gguf"), b"weights").unwrap();
+        std::fs::write(models.join("orphan.Modelfile"), b"FROM \"gone.gguf\"").unwrap();
+
+        sweep_orphan_modelfiles(&models).await;
+
+        assert!(!models.join("orphan.Modelfile").exists());
+        assert!(models.join("keep.gguf").exists());
+    }
+
+    #[tokio::test]
+    async fn deleting_a_gguf_also_removes_its_modelfile() {
+        let app_dir = scratch_app_dir("delete-sibling");
+        let models = app_dir.join("models");
+        std::fs::write(models.join("m.gguf"), b"weights").unwrap();
+        std::fs::write(models.join("m.Modelfile"), b"FROM \"m.gguf\"").unwrap();
+
+        delete_local_gguf("m.gguf".to_string(), app_dir.clone())
+            .await
+            .expect("delete should succeed");
+
+        assert!(!models.join("m.gguf").exists());
+        assert!(!models.join("m.Modelfile").exists());
+    }
+
+    /// The regression this whole change exists for: the import must succeed and keep the
+    /// user's file even when Ollama can't take the model. The payload here is not a real
+    /// GGUF, so registration fails whether or not a daemon is up — the outcome must be
+    /// `Ok` either way.
+    #[tokio::test]
+    async fn import_succeeds_and_keeps_source_even_when_ollama_cannot_register() {
+        let app_dir = scratch_app_dir("import-e2e");
+        let src = app_dir.join("my-model-Q4_K_M.gguf");
+        std::fs::write(&src, b"not actually gguf bytes").unwrap();
+
+        let msg = import_local_gguf(
+            src.to_string_lossy().to_string(),
+            "helix-import-test".to_string(),
+            app_dir.clone(),
+        )
+        .await
+        .expect("import must not fail just because Ollama is unavailable");
+
+        assert!(src.exists(), "the user's original file must still be there");
+        assert!(app_dir.join("models").join("my-model-Q4_K_M.gguf").exists());
+        assert!(msg.contains("Imported"), "got: {msg}");
+
+        // No Modelfile litter left behind in the models folder.
+        let strays: Vec<_> = std::fs::read_dir(app_dir.join("models"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".Modelfile"))
+            .collect();
+        assert!(strays.is_empty(), "stray Modelfiles: {strays:?}");
+    }
+
+    /// A `.GGUF` (uppercase) import used to be rejected before it even started.
+    #[tokio::test]
+    async fn import_accepts_uppercase_extension() {
+        let app_dir = scratch_app_dir("import-upper");
+        let src = app_dir.join("shouty.GGUF");
+        std::fs::write(&src, b"weights").unwrap();
+
+        import_local_gguf(
+            src.to_string_lossy().to_string(),
+            "helix-upper-test".to_string(),
+            app_dir.clone(),
+        )
+        .await
+        .expect(".GGUF must be importable");
+
+        assert!(app_dir.join("models").join("shouty.GGUF").exists());
+    }
 }
