@@ -230,7 +230,19 @@ fn bundled_skills_server(app: &AppHandle) -> Option<PathBuf> {
     candidates
         .into_iter()
         .find(|p| p.is_file())
-        .map(|p| p.canonicalize().unwrap_or(p))
+        .map(node_safe_canonical)
+}
+
+/// Absolute, `..`-free path in a form Node can actually load.
+///
+/// `std::fs::canonicalize` returns a Windows extended-length path (`\\?\C:\...`).
+/// Node's `realpathSync` reads that as the bare root `C:` and throws
+/// `EISDIR: illegal operation on a directory, lstat 'C:'`, so a server launched
+/// this way exited before running a line. Canonicalizing is still necessary —
+/// the dev candidate resolves through a `..` segment — so `dunce` does it and
+/// hands back the plain form whenever that is safe.
+fn node_safe_canonical(path: PathBuf) -> PathBuf {
+    dunce::canonicalize(&path).unwrap_or(path)
 }
 
 /// Describes the built-in skills server so it can be offered in Plugin Settings.
@@ -1136,6 +1148,33 @@ async fn download_github_zipball(source: &GitHubSource, target_dir: &Path) -> Re
     .map_err(|e| format!("Plugin extraction task failed: {e}"))?
 }
 
+/// Pull in a cloned repo's submodules, best effort.
+///
+/// Some plugins keep their actual payload in a submodule — ai-maestro ships its
+/// skills in `plugin/`, a pointer to `ai-maestro-plugins` — and a plain
+/// `git clone` leaves that directory empty, so the plugin loads with no skills and
+/// no entry point. Never fatal: a repo without submodules no-ops, and one whose
+/// submodule is unreachable is still worth keeping. Note the zipball fallback
+/// can't be repaired this way, since GitHub archives omit submodule content.
+async fn init_submodules(repo_dir: &Path) {
+    let result = Command::new("git")
+        .args(["submodule", "update", "--init", "--recursive", "--depth", "1"])
+        .current_dir(repo_dir)
+        .no_window()
+        .output()
+        .await;
+
+    match result {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => log::warn!(
+            "Could not initialise submodules in {}: {}",
+            repo_dir.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ),
+        Err(e) => log::warn!("Could not run git submodule in {}: {e}", repo_dir.display()),
+    }
+}
+
 #[tauri::command]
 pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) -> Result<DiscoveredPlugin, String> {
     let source = normalize_github_source(&url)?;
@@ -1159,7 +1198,9 @@ pub async fn install_awesome_skill(app: AppHandle, url: String, name: String) ->
             .output()
             .await;
         match clone_result {
-            Ok(output) if output.status.success() => {}
+            Ok(output) if output.status.success() => {
+                init_submodules(&target_dir).await;
+            }
             Ok(output) => {
                 let _ = tokio::fs::remove_dir_all(&target_dir).await;
                 download_github_zipball(&source, &target_dir).await.map_err(|zip_error| {
@@ -1451,6 +1492,23 @@ pub async fn kill_mcp_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A path handed to `node` must not carry Windows' `\\?\` prefix: Node parses
+    /// that as the root `C:` and dies with `EISDIR ... lstat 'C:'`, which is how
+    /// the bundled skills server failed to start at all.
+    #[test]
+    fn skills_server_path_is_loadable_by_node() {
+        let resolved = node_safe_canonical(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("src-tauri"),
+        );
+        let shown = resolved.display().to_string();
+        assert!(
+            !shown.starts_with(r"\\?\"),
+            "path would break node's realpathSync: {shown}"
+        );
+        // The `..` still has to be gone, or a relative segment reaches the child.
+        assert!(!shown.contains(".."), "path was not canonicalized: {shown}");
+    }
 
     #[test]
     fn mcp_config_expands_plugin_root_and_sets_cwd() {
