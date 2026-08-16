@@ -860,13 +860,12 @@ async function scrollToBottom() {
 // API key and cloud auth have been removed
 
 async function send() {
-  let text = draft.value.trim();
+  const text = draft.value.trim();
 
-  if (attachedFiles.value.length > 0) {
-    for (const f of attachedFiles.value) {
-      text += (text ? "\n\n" : "") + `--- File: ${f.name} ---\n${f.content}\n`;
-    }
-  }
+  // File bodies used to be concatenated straight into `text`, which dumped the whole
+  // file into the visible chat bubble. They travel on the message as `files` instead
+  // and are folded back into the model payload by `buildMessages` below.
+  const files = attachedFiles.value.map((f) => ({ name: f.name, content: f.content }));
 
   if (streaming.value || pulling.value) return;
 
@@ -967,7 +966,7 @@ async function send() {
     }
   }
 
-  if ((!text && attachedImages.value.length === 0) || !activeChat.value || !selectedModel.value) return;
+  if ((!text && attachedImages.value.length === 0 && files.length === 0) || !activeChat.value || !selectedModel.value) return;
 
   const modelInList = models.value.some((m) => modelKey(m.name) === modelKey(selectedModel.value));
   const modelIsGguf = localGgufs.value.some((g) => g.name === selectedModel.value || g.name.toLowerCase() === selectedModel.value.toLowerCase());
@@ -979,10 +978,15 @@ async function send() {
   if (attachedImages.value.length > 0) {
     userMsg.images = [...attachedImages.value];
   }
+  if (files.length > 0) {
+    userMsg.files = files;
+  }
   chat.messages.push(userMsg);
 
   if (chat.messages.length === 1) {
-    chat.title = text.slice(0, 48) + (text.length > 48 ? "…" : "");
+    // A file-only turn has no text to title the chat with, so fall back to the names.
+    const titleSource = text || files.map((f) => f.name).join(", ");
+    chat.title = titleSource.slice(0, 48) + (titleSource.length > 48 ? "…" : "");
   }
   chat.model = selectedModel.value;
   draft.value = "";
@@ -1091,9 +1095,22 @@ async function send() {
   const buildMessages = (upTo: number) => {
     const history = chat.messages.slice(0, upTo);
     const capped = history.length > 20 ? history.slice(-20) : history;
+    // `files` is a UI-side field: the bubble shows a pill, the model gets the bodies.
+    // Rebuilt explicitly so UI-only fields never reach the backend payload.
+    const forModel = (m: any) => {
+      const parts: string[] = [];
+      if (m.content) parts.push(m.content);
+      for (const f of m.files || []) {
+        parts.push(`--- File: ${f.name} ---\n${f.content}`);
+      }
+      const out: any = { role: m.role, content: parts.join("\n\n") };
+      if (m.images) out.images = m.images;
+      if (m.tool_calls) out.tool_calls = m.tool_calls;
+      return out;
+    };
     return [
       { role: "system", content: getSystemPrompt(selectedModel.value) },
-      ...capped,
+      ...capped.map(forModel),
     ];
   };
 

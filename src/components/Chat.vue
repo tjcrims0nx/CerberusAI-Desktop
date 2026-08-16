@@ -15,6 +15,22 @@
             <img v-for="(img, idx) in m.images" :key="idx" :src="'data:image/jpeg;base64,' + img" class="msg-img" />
           </div>
 
+          <div v-if="m.files && m.files.length > 0" class="msg-files">
+            <div v-for="(f, idx) in m.files" :key="idx" class="msg-file">
+              <button
+                class="msg-file-pill"
+                :class="{ open: expandedFile === i + ':' + idx }"
+                :title="expandedFile === i + ':' + idx ? 'Hide contents' : 'Show contents'"
+                @click.stop="toggleFile(i, idx)"
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                <span class="msg-file-name">{{ f.name }}</span>
+                <span class="msg-file-meta">{{ fileMeta(f.content) }}</span>
+              </button>
+              <pre v-if="expandedFile === i + ':' + idx" class="msg-file-body">{{ f.content }}</pre>
+            </div>
+          </div>
+
           <div v-if="m.tool_calls && m.tool_calls.length" class="tool-call-list">
             <span v-for="(tc, ti) in m.tool_calls" :key="ti" class="tool-call-chip">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"></path></svg>
@@ -76,6 +92,25 @@ const props = defineProps<{
 }>();
 
 const copiedIndex = ref<number | null>(null);
+// "<messageIndex>:<fileIndex>" of the one attachment whose body is expanded.
+const expandedFile = ref<string | null>(null);
+
+function toggleFile(msgIndex: number, fileIndex: number) {
+  const key = `${msgIndex}:${fileIndex}`;
+  expandedFile.value = expandedFile.value === key ? null : key;
+}
+
+/** Line and size summary shown on the pill, so the file isn't opaque. */
+function fileMeta(content: string): string {
+  const lines = content ? content.split('\n').length : 0;
+  const bytes = content ? new Blob([content]).size : 0;
+  const size = bytes >= 1024 * 1024
+    ? `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    : bytes >= 1024
+      ? `${(bytes / 1024).toFixed(1)} KB`
+      : `${bytes} B`;
+  return `${lines} lines · ${size}`;
+}
 
 /** True while this row is the one the stream is actively writing into. */
 function isStreamingRow(m: any, i: number) {
@@ -96,6 +131,8 @@ function isVisible(m: any, i: number) {
   if ((m.content || '').trim()) return true;
   // An image-only message has no text but is still a real turn.
   if (m.images && m.images.length) return true;
+  // Same for a message that is nothing but attached files.
+  if (m.files && m.files.length) return true;
   return m.role === 'assistant' && !!(m.tool_calls && m.tool_calls.length);
 }
 

@@ -10,10 +10,20 @@ export interface ToolCallChunk {
   function: ToolCallFunction;
 }
 
+export interface AttachedFile {
+  name: string;
+  content: string;
+}
+
 export interface Message {
   role: Role;
   content: string;
   images?: string[];
+  /**
+   * Attached text files. Kept out of `content` so the transcript shows a compact
+   * pill; the bodies are folded into the payload when the model is called.
+   */
+  files?: AttachedFile[];
   tool_calls?: ToolCallChunk[];
 }
 

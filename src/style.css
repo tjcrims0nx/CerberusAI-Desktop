@@ -434,6 +434,59 @@ a:hover { color: #d8b4fe; }
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
 }
 
+/* Attached text files on a user turn. The body is collapsed behind the pill —
+   inlining it into the message content flooded the transcript with the whole file. */
+.msg-files {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.msg-files:not(:last-child) { margin-bottom: 0.6rem; }
+.msg-file-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 5px 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: rgba(56, 189, 248, 0.12);
+  color: #7dd3fc;
+  font-size: 0.76rem;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+.msg-file-pill:hover,
+.msg-file-pill.open {
+  border-color: rgba(56, 189, 248, 0.6);
+  background: rgba(56, 189, 248, 0.2);
+}
+.msg-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+.msg-file-meta {
+  flex-shrink: 0;
+  opacity: 0.62;
+}
+.msg-file-body {
+  max-height: 340px;
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(0, 0, 0, 0.42);
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 0.76rem;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  white-space: pre;
+  tab-size: 4;
+}
+
 /* Tool approval gate — shown before any side-effecting MCP tool runs.
    Above every other overlay so a pending call can never be obscured. */
 .approval-overlay {
