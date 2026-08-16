@@ -1358,6 +1358,18 @@ async function handleUpdate() {
 
   const onEvent = new Channel<any>();
   onEvent.onmessage = (evt) => {
+    // Terminal events carry completed/total too, so they have to be checked first.
+    // Matching on the progress fields swallowed them, installerLaunched never flipped,
+    // and a failed launch pulled up the releases page in a browser instead.
+    if (evt.error) {
+      updateProgressText.value = String(evt.error).toUpperCase();
+      return;
+    }
+    if (evt.done) {
+      installerLaunched = true;
+      if (evt.status) updateProgressText.value = evt.status.toUpperCase();
+      return;
+    }
     if (evt.completed && evt.total) {
       const pct = Math.round((evt.completed / evt.total) * 100);
       const mb = (evt.completed / (1024 * 1024)).toFixed(1);
@@ -1365,9 +1377,6 @@ async function handleUpdate() {
       updateProgressText.value = `${pct}% (${mb}/${totalMb} MB)`;
     } else if (evt.status) {
       updateProgressText.value = evt.status.toUpperCase();
-      if (evt.done && !evt.error) {
-        installerLaunched = true;
-      }
     }
   };
 

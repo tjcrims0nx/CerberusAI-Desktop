@@ -136,10 +136,31 @@ struct GitHubReleaseInfo {
     assets: Vec<GitHubAssetInfo>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct GitHubAssetInfo {
     name: String,
     browser_download_url: String,
+}
+
+/// Choose which release asset to install.
+///
+/// The API returns assets in upload order, so matching the first `.exe`-or-`.msi` was a coin
+/// flip between the NSIS installer and the MSI. Only the NSIS bundle matches how HELIX is
+/// actually installed, and release.yml always normalizes it to `HELIX-Setup.exe`, so prefer
+/// that by name and fall back in a defined order rather than whatever was uploaded first.
+fn pick_installer_asset(assets: &[GitHubAssetInfo]) -> Option<GitHubAssetInfo> {
+    let has_ext = |a: &GitHubAssetInfo, ext: &str| {
+        std::path::Path::new(&a.name)
+            .extension()
+            .and_then(|s| s.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+    };
+    assets
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case("HELIX-Setup.exe"))
+        .or_else(|| assets.iter().find(|a| has_ext(a, "exe")))
+        .or_else(|| assets.iter().find(|a| has_ext(a, "msi")))
+        .cloned()
 }
 
 pub async fn download_and_install_update(
@@ -179,10 +200,7 @@ pub async fn download_and_install_update(
 
     let rel_info = resp.json::<GitHubReleaseInfo>().await?;
 
-    let asset = rel_info
-        .assets
-        .into_iter()
-        .find(|a| a.name.ends_with(".exe") || a.name.ends_with(".msi"))
+    let asset = pick_installer_asset(&rel_info.assets)
         .ok_or_else(|| anyhow::anyhow!("No installer file (.exe or .msi) found in release assets for {tag_clean}"))?;
 
     let _ = out.send(UpdateProgress {
@@ -212,54 +230,168 @@ pub async fn download_and_install_update(
     let temp_dir = std::env::temp_dir();
     let installer_path = temp_dir.join(&asset.name);
 
-    let mut file = tokio::fs::File::create(&installer_path).await?;
-    let mut downloaded: u64 = 0;
-    let mut stream = download_resp.bytes_stream();
+    // Anything that goes wrong past this point leaves a partial installer in temp, and
+    // launching a half-downloaded installer is worse than reporting a failure. Run the
+    // transfer in one block so a single error path can delete it.
+    let transfer = async {
+        let mut file = tokio::fs::File::create(&installer_path).await?;
+        let mut downloaded: u64 = 0;
+        let mut stream = download_resp.bytes_stream();
+        // One event per chunk put thousands of IPC messages on the channel for a single
+        // installer, which is what made the progress readout thrash. Sample at the same
+        // 500ms cadence the model downloader uses.
+        let mut last_emit = std::time::Instant::now();
 
-    while let Some(chunk_res) = stream.next().await {
-        let chunk = chunk_res?;
-        file.write_all(&chunk).await?;
-        downloaded += chunk.len() as u64;
+        while let Some(chunk_res) = stream.next().await {
+            let chunk = chunk_res?;
+            file.write_all(&chunk).await?;
+            downloaded += chunk.len() as u64;
 
-        let _ = out.send(UpdateProgress {
-            status: format!("Downloading {}...", asset.name),
-            completed: Some(downloaded),
-            total: if total_bytes > 0 { Some(total_bytes) } else { None },
-            done: false,
-            error: None,
-        });
+            if last_emit.elapsed() >= Duration::from_millis(500) {
+                last_emit = std::time::Instant::now();
+                let _ = out.send(UpdateProgress {
+                    status: format!("Downloading {}...", asset.name),
+                    completed: Some(downloaded),
+                    total: if total_bytes > 0 { Some(total_bytes) } else { None },
+                    done: false,
+                    error: None,
+                });
+            }
+        }
+
+        file.flush().await?;
+        drop(file);
+
+        // A stream that ends early is not itself an error, so the byte count has to be
+        // checked against Content-Length rather than trusting the loop to have read all
+        // of it.
+        if total_bytes > 0 && downloaded != total_bytes {
+            anyhow::bail!("download was truncated: got {downloaded} of {total_bytes} bytes");
+        }
+
+        Ok::<u64, anyhow::Error>(downloaded)
     }
+    .await;
 
-    file.flush().await?;
-    drop(file);
+    let downloaded = match transfer {
+        Ok(n) => n,
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&installer_path).await;
+            let msg = format!("Failed to download {}: {e}", asset.name);
+            let _ = out.send(UpdateProgress {
+                status: format!("error: {msg}"),
+                completed: None, total: None, done: true, error: Some(msg.clone()),
+            });
+            return Err(anyhow::anyhow!(msg));
+        }
+    };
 
     let _ = out.send(UpdateProgress {
         status: "Launching installer...".into(),
+        completed: Some(downloaded),
+        total: if total_bytes > 0 { Some(total_bytes) } else { None },
+        done: false,
+        error: None,
+    });
+
+    if let Err(e) = launch_installer(&installer_path).await {
+        let msg = format!("Could not start {}: {e}", asset.name);
+        // Nothing in this function used to reach the log, so a failed update left no
+        // on-disk trace to diagnose from — only a browser window opening.
+        log::error!("In-app update failed: {msg}");
+        let _ = out.send(UpdateProgress {
+            status: format!("error: {msg}"),
+            completed: None, total: None, done: true, error: Some(msg.clone()),
+        });
+        return Err(anyhow::anyhow!(msg));
+    }
+    log::info!(
+        "Update installer launched: {} ({downloaded} bytes)",
+        installer_path.display()
+    );
+
+    // `done: true` is sent only once the installer is confirmed running, so the frontend
+    // can treat it as "stop here" instead of falling back to opening the releases page.
+    let _ = out.send(UpdateProgress {
+        status: "Installer launched".into(),
         completed: Some(downloaded),
         total: if total_bytes > 0 { Some(total_bytes) } else { None },
         done: true,
         error: None,
     });
 
-    #[cfg(target_os = "windows")]
-    {
-        if asset.name.ends_with(".msi") {
-            std::process::Command::new("msiexec")
-                .args(["/i", &installer_path.to_string_lossy(), "/passive"])
-                .spawn()?;
-        } else {
-            std::process::Command::new(&installer_path)
-                .spawn()?;
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::process::Command::new(&installer_path).spawn()?;
-    }
-
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // `std::process::exit` skips Tauri's `RunEvent::Exit` hook, so the engine teardown
+    // that hook performs (lib.rs) has to happen explicitly here. Without it
+    // llama-server.exe outlives the app and keeps a handle on ~/.HELIX/bin — the same
+    // os error 32 class of failure that hook was added to prevent, hitting the installer
+    // this time.
+    crate::llama_engine::stop_server();
+    tokio::time::sleep(Duration::from_millis(300)).await;
     std::process::exit(0);
+}
+
+/// Start a downloaded installer, elevating it on Windows.
+///
+/// The NSIS bundle is built `installMode: perMachine`, so its manifest requires
+/// administrator rights. A bare `Command::spawn` cannot satisfy that — Windows refuses it
+/// with os error 740 (`ERROR_ELEVATION_REQUIRED`) — and that refusal is what used to send
+/// the updater down its fallback path, downloading the whole installer and then opening
+/// the releases page in a browser instead of installing anything. ShellExecute's `runas`
+/// verb raises the UAC prompt the installer needs, and `Start-Process` reaches it without
+/// pulling in a new Win32 dependency.
+#[cfg(target_os = "windows")]
+async fn launch_installer(installer_path: &std::path::Path) -> Result<(), anyhow::Error> {
+    // PowerShell single-quoted literals escape a quote by doubling it.
+    fn ps_literal(s: &str) -> String {
+        format!("'{}'", s.replace('\'', "''"))
+    }
+
+    let quoted = ps_literal(&installer_path.to_string_lossy());
+    let is_msi = installer_path
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("msi"));
+
+    let command = if is_msi {
+        format!("Start-Process -FilePath 'msiexec.exe' -ArgumentList '/i',{quoted},'/passive' -Verb RunAs -ErrorAction Stop")
+    } else {
+        format!("Start-Process -FilePath {quoted} -Verb RunAs -ErrorAction Stop")
+    };
+
+    let output = match tokio::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &command])
+        .no_window()
+        .output()
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            // No PowerShell on PATH. An unelevated attempt will fail on a perMachine
+            // installer, but it beats not trying at all.
+            log::warn!("Could not run powershell to elevate the installer: {e}");
+            std::process::Command::new(installer_path).spawn()?;
+            return Ok(());
+        }
+    };
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    // A declined UAC prompt lands here. Surfacing it beats closing the app and leaving
+    // the user wondering why nothing updated.
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(anyhow::anyhow!(if stderr.is_empty() {
+        format!("the installer did not start ({})", output.status)
+    } else {
+        stderr
+    }))
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn launch_installer(installer_path: &std::path::Path) -> Result<(), anyhow::Error> {
+    std::process::Command::new(installer_path).spawn()?;
+    Ok(())
 }
 
 // ─── Cloud: GitHub release-based update check ──────────────────────────────
@@ -1685,6 +1817,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("models")).expect("temp dir");
         dir
+    }
+
+    fn release_asset(name: &str) -> GitHubAssetInfo {
+        GitHubAssetInfo {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.invalid/{name}"),
+        }
+    }
+
+    /// Every release uploads the MSI next to the NSIS installer, and the API can return it
+    /// first. Picking it would run `msiexec` against an NSIS `perMachine` install.
+    #[test]
+    fn installer_pick_prefers_nsis_whatever_the_upload_order() {
+        for order in [
+            vec!["HELIX-Setup.exe", "HELIX_0.6.10_x64_en-US.msi", "SHA256SUMS.txt"],
+            vec!["SHA256SUMS.txt", "HELIX_0.6.10_x64_en-US.msi", "HELIX-Setup.exe"],
+        ] {
+            let assets: Vec<_> = order.iter().map(|n| release_asset(n)).collect();
+            assert_eq!(
+                pick_installer_asset(&assets).expect("an installer").name,
+                "HELIX-Setup.exe",
+                "wrong asset chosen for order {order:?}"
+            );
+        }
+    }
+
+    /// Pre-rebrand releases ship `Cerberus-Setup.exe`, so the fallback has to accept any
+    /// `.exe` rather than only the current normalized name.
+    #[test]
+    fn installer_pick_falls_back_to_any_exe_then_msi() {
+        let legacy = [release_asset("SHA256SUMS.txt"), release_asset("Cerberus-Setup.exe")];
+        assert_eq!(
+            pick_installer_asset(&legacy).expect("an installer").name,
+            "Cerberus-Setup.exe"
+        );
+
+        let msi_only = [release_asset("SHA256SUMS.txt"), release_asset("HELIX_0.6.10_x64_en-US.msi")];
+        assert_eq!(
+            pick_installer_asset(&msi_only).expect("an installer").name,
+            "HELIX_0.6.10_x64_en-US.msi"
+        );
+    }
+
+    /// A release with no installer must report that rather than hand a checksum file to
+    /// the launcher.
+    #[test]
+    fn installer_pick_rejects_a_release_without_an_installer() {
+        let assets = [release_asset("SHA256SUMS.txt"), release_asset("notes.md")];
+        assert!(pick_installer_asset(&assets).is_none());
     }
 
     #[test]
