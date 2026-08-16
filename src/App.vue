@@ -1464,6 +1464,7 @@ onMounted(async () => {
     :activatedGgufs="activatedGgufs"
     :isImporting="isImporting"
     :isDeletingGguf="isDeletingGguf"
+    :refreshAllModels="refreshAllModels"
     :searchHuggingFace="searchHuggingFace"
     :listHuggingFaceFiles="listHuggingFaceFiles"
     :pulling="pulling"

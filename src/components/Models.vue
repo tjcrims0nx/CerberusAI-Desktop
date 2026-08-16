@@ -11,7 +11,18 @@
             <h2 class="manager-title">MODEL MANAGER</h2>
             <p class="manager-subtitle">Manage downloaded models &amp; remote pulls</p>
           </div>
-          <button class="manager-close" @click="$emit('close')">✕</button>
+          <div class="manager-header-actions">
+            <button
+              class="manager-refresh"
+              :class="{ spinning: refreshing }"
+              :disabled="refreshing"
+              :title="refreshing ? 'Refreshing…' : 'Refresh model list'"
+              @click="doRefresh()"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7"></path><polyline points="21 3 21 9 15 9"></polyline></svg>
+            </button>
+            <button class="manager-close" @click="$emit('close')">✕</button>
+          </div>
         </div>
 
         <!-- Search bar -->
@@ -233,6 +244,7 @@ const props = defineProps<{
   activatedGgufs: Set<string>;
   isImporting: boolean;
   isDeletingGguf: boolean;
+  refreshAllModels: () => Promise<void>;
   searchHuggingFace: (query: string) => Promise<HuggingFaceModel[]>;
   listHuggingFaceFiles: (repoId: string) => Promise<HuggingFaceFile[]>;
   pulling: any;
@@ -266,6 +278,27 @@ const hfSearching = ref(false);
 const hfExpandedRepo = ref<string | null>(null);
 const hfRepoFiles = ref<Record<string, HuggingFaceFile[]>>({});
 const hfLoadingFiles = ref<Record<string, boolean>>({});
+const refreshing = ref(false);
+
+async function doRefresh() {
+  if (refreshing.value) return;
+  refreshing.value = true;
+  try {
+    await props.refreshAllModels();
+    // On the HuggingFace tab the local lists are off-screen, so a refresh that only
+    // re-scanned disk would look like nothing happened. Re-run the query as well, and
+    // drop the cached file lists so expanded repos re-fetch instead of showing stale quants.
+    if (localManagerTab.value === 'huggingface') {
+      hfRepoFiles.value = {};
+      hfExpandedRepo.value = null;
+      await doHfSearch();
+    }
+  } catch (err) {
+    console.error('Refresh failed:', err);
+  } finally {
+    refreshing.value = false;
+  }
+}
 
 let searchTimeout: any = null;
 
@@ -503,8 +536,15 @@ function fmtEta(secs?: number): string {
   font-size: 0.8rem;
 }
 
-.manager-close {
+.manager-header-actions {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.manager-refresh,
+.manager-close {
   width: 32px;
   height: 32px;
   border-radius: 8px;
@@ -516,6 +556,25 @@ function fmtEta(secs?: number): string {
   align-items: center;
   justify-content: center;
   transition: all 0.2s ease;
+}
+
+.manager-refresh:hover:not(:disabled) {
+  background: rgba(168, 85, 247, 0.22);
+  border-color: rgba(168, 85, 247, 0.45);
+  color: white;
+}
+
+.manager-refresh:disabled {
+  cursor: default;
+  color: #c084fc;
+}
+
+.manager-refresh.spinning svg {
+  animation: refresh-spin 0.9s linear infinite;
+}
+
+@keyframes refresh-spin {
+  to { transform: rotate(360deg); }
 }
 
 .manager-close:hover {
