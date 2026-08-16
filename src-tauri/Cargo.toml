@@ -21,7 +21,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "sync", "fs", "time", "process"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls", "rustls-native-certs"] }
 futures-util = "0.3"
-sysinfo = "0.38"
+sysinfo = "0.39"
 log = "0.4"
 # Without a backend registered, every `log::` macro in this crate is a silent
 # no-op — which is how the storage failures below went unnoticed.
@@ -31,7 +31,7 @@ tauri-plugin-dialog = "2"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 aes-gcm = "0.10.3"
-rand = "0.9.4"
+rand = "0.10.2"
 # Platform credential-store backends are opt-in features. With none enabled,
 # keyring silently falls back to an in-memory *mock* store that accepts writes
 # and returns NoEntry on every read — so the AES master key was regenerated on
@@ -66,11 +66,11 @@ webview2-com = "0.38"
 windows061 = { package = "windows", version = "0.61", default-features = false }
 # Window screenshot capture for the in-app browser (PrintWindow/GDI under the hood).
 xcap = "0.9"
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_UI_WindowsAndMessaging",
 ] }
-winreg = "0.55"
+winreg = "0.56"
 dirs = "6"
 
 [target.'cfg(target_os = "macos")'.dependencies]

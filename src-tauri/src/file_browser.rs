@@ -250,7 +250,9 @@ async fn write_index(items: &[LibraryItem]) -> Result<(), String> {
 }
 
 fn new_id() -> String {
-    use rand::Rng;
+    // rand 0.10 moved `random()` off `Rng` (now an alias for the old `RngCore`)
+    // and onto `RngExt`.
+    use rand::RngExt;
     let bytes: [u8; 12] = rand::rng().random();
     hex::encode(bytes)
 }
