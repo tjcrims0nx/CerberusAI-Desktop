@@ -80,9 +80,12 @@
 import { computed, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
+import { Chat } from '../types';
 
 const props = defineProps<{
-  activeChat: any;
+  // Typed rather than `any` because vue-tsc widens a `v-for` index over `any`
+  // to `string | number`, which then fails to match the `i: number` handlers.
+  activeChat: Chat;
   streaming: boolean;
   streamingContent: string;
   lastTtft: number | null;
