@@ -27,5 +27,11 @@ export default defineConfig(async () => ({
       process.env.TAURI_ENV_PLATFORM === "windows" ? "chrome105" : "safari14.1",
     minify: !process.env.TAURI_ENV_DEBUG ? "esbuild" : false,
     sourcemap: !!process.env.TAURI_ENV_DEBUG,
+    // Vite's 500 kB warning is about download time on a network. HELIX ships its
+    // bundle inside the installer and WebView2 reads it off the local disk, so the
+    // number it's measuring doesn't apply — code-splitting to satisfy it would add
+    // lazy-loading complexity and buy nothing. Raised so a real size regression
+    // still trips it.
+    chunkSizeWarningLimit: 1000,
   },
 }));
