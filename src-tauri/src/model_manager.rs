@@ -1091,11 +1091,17 @@ pub async fn stream_chat_local(
     mut cancel_rx: tokio::sync::watch::Receiver<bool>,
 ) -> Result<(), anyhow::Error> {
     let c = http()?;
-    let body = LocalChatReq { 
-        model: &model, 
-        messages: &messages, 
+    let body = LocalChatReq {
+        model: &model,
+        messages: &messages,
         stream: true,
-        options: LocalChatOptions { num_ctx: 2048, num_predict: 2048, num_batch: Some(512) },
+        // 2048 was small enough that a single attached file overflowed the window and the
+        // request was rejected outright. This path can't negotiate the way `llama_engine`'s
+        // context ladder does — Ollama allocates the KV cache eagerly for whatever `num_ctx`
+        // asks for and fails the load if it doesn't fit, and there's no second attempt to fall
+        // back to. So it gets a large-but-safe window rather than the engine's top rung.
+        // Ollama clamps this down to the model's trained context on its own.
+        options: LocalChatOptions { num_ctx: 32768, num_predict: 2048, num_batch: Some(512) },
         keep_alive: "10m",
         tools: tools.as_deref(),
     };

@@ -273,6 +273,40 @@ pub async fn find_or_download_llama_server(app_dir: &Path) -> Result<PathBuf, an
     download_llama_server(app_dir).await
 }
 
+/// Cached `--help` text for the installed `llama-server`, used to feature-probe
+/// flags whose spelling changed across llama.cpp releases.
+///
+/// `--help` initialises the GPU backend, which is far too slow to repeat on every
+/// spawn, so the text is captured once per binary and every probe reads it from
+/// memory. stdout and stderr are concatenated because which stream carries the
+/// usage text has moved around between builds.
+fn server_help(server_bin: &Path) -> String {
+    static CACHE: StdMutex<Option<(PathBuf, String)>> = StdMutex::new(None);
+
+    if let Some((path, help)) = CACHE.lock().unwrap().as_ref() {
+        if path == server_bin {
+            return help.clone();
+        }
+    }
+
+    let help = Command::new(server_bin)
+        .arg("--help")
+        .no_window()
+        .output()
+        .ok()
+        .map(|out| {
+            format!(
+                "{}{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        })
+        .unwrap_or_default();
+
+    *CACHE.lock().unwrap() = Some((server_bin.to_path_buf(), help.clone()));
+    help
+}
+
 /// Whether this `llama-server` build's `-fa` flag takes a value.
 ///
 /// `-fa` was a plain boolean switch for most of llama.cpp's history and only
@@ -281,38 +315,68 @@ pub async fn find_or_download_llama_server(app_dir: &Path) -> Result<PathBuf, an
 /// takes down chat for *every* model rather than degrading quietly — so the
 /// flag is matched to whatever binary is actually installed.
 ///
-/// The result is cached because `--help` initialises the GPU backend, which is
-/// far too slow to repeat on every spawn. Unreadable help is treated as "no
-/// value": bare `-fa` is accepted by both spellings, so it is the safe guess.
+/// Unreadable help is treated as "no value": bare `-fa` is accepted by both
+/// spellings, so it is the safe guess.
 fn flash_attn_takes_value(server_bin: &Path) -> bool {
-    static CACHE: StdMutex<Option<(PathBuf, bool)>> = StdMutex::new(None);
-
-    if let Some((path, takes_value)) = CACHE.lock().unwrap().as_ref() {
-        if path == server_bin {
-            return *takes_value;
-        }
-    }
-
-    let takes_value = Command::new(server_bin)
-        .arg("--help")
-        .no_window()
-        .output()
-        .ok()
-        .map(|out| {
-            let help = String::from_utf8_lossy(&out.stdout);
-            help.lines()
-                .find(|line| line.contains("--flash-attn"))
-                // The valued form documents its argument as `[on|off|auto]`;
-                // the boolean form has nothing between flag and description.
-                .is_some_and(|line| line.contains('['))
-        })
-        .unwrap_or(false);
-
-    *CACHE.lock().unwrap() = Some((server_bin.to_path_buf(), takes_value));
-    takes_value
+    server_help(server_bin)
+        .lines()
+        .find(|line| line.contains("--flash-attn"))
+        // The valued form documents its argument as `[on|off|auto]`; the boolean
+        // form has nothing between flag and description.
+        .is_some_and(|line| line.contains('['))
 }
 
-fn spawn_llama_server(server_bin: &Path, model_path: &Path, ngl: u32) -> Result<Child, anyhow::Error> {
+/// Whether this build accepts `--cache-type-k`, which older ones don't.
+fn supports_kv_cache_type(server_bin: &Path) -> bool {
+    server_help(server_bin).contains("--cache-type-k")
+}
+
+/// Whether this build accepts `-nkvo`, which is what makes [`Offload::WeightsOnly`] possible.
+fn supports_no_kv_offload(server_bin: &Path) -> bool {
+    server_help(server_bin).contains("--no-kv-offload")
+}
+
+/// How much of the model and its KV cache to hand to the GPU.
+#[derive(Copy, Clone, PartialEq)]
+enum Offload {
+    /// Every layer and the KV cache on the GPU — fastest, when the VRAM is there.
+    Full,
+    /// Every layer on the GPU but the KV cache in system RAM. On a small card this is
+    /// what makes a very large context possible at all: measured on a 4 GB RTX 2050,
+    /// `Full` could not fit 131072 tokens of KV alongside the weights while this could,
+    /// and every layer stays accelerated. Attention pays for reading KV over PCIe.
+    WeightsOnly,
+    /// CPU only — the last resort, for when the weights themselves don't fit.
+    Cpu,
+}
+
+impl Offload {
+    fn label(self) -> &'static str {
+        match self {
+            Offload::Full => "gpu",
+            Offload::WeightsOnly => "gpu, kv in ram",
+            Offload::Cpu => "cpu",
+        }
+    }
+}
+
+/// Context sizes to try, largest first.
+///
+/// 8192 was small enough that attaching one source file overflowed it and llama-server
+/// rejected the whole request (`exceed_context_size_error`), so the engine is asked for a
+/// very large window instead. What a machine can actually hold depends on the model's
+/// layer count and embedding width, which aren't known here without parsing GGUF metadata
+/// — so rather than guess, `ensure_server` walks this ladder and keeps the first size that
+/// loads. An oversized context fails fast (a few seconds, at KV allocation), so the extra
+/// attempts are cheap.
+const CTX_LADDER: [u32; 4] = [131_072, 65_536, 32_768, 8_192];
+
+fn spawn_llama_server(
+    server_bin: &Path,
+    model_path: &Path,
+    offload: Offload,
+    ctx: u32,
+) -> Result<Child, anyhow::Error> {
     let threads = std::thread::available_parallelism()
         .map(|n| n.get().saturating_sub(1).max(1))
         .unwrap_or(4);
@@ -323,7 +387,7 @@ fn spawn_llama_server(server_bin: &Path, model_path: &Path, ngl: u32) -> Result<
        .arg("--port")
        .arg(SERVER_PORT.to_string())
        .arg("-c")
-       .arg("8192")
+       .arg(ctx.to_string())
        .arg("-b")
        .arg("2048")
        .arg("-ub")
@@ -331,10 +395,23 @@ fn spawn_llama_server(server_bin: &Path, model_path: &Path, ngl: u32) -> Result<
        .arg("-t")
        .arg(threads.to_string())
        .arg("-ngl")
-       .arg(ngl.to_string())
+       .arg(if offload == Offload::Cpu { "0" } else { "99" })
        .arg("-np")
        .arg("1")
        .arg("--mmap");
+
+    if offload == Offload::WeightsOnly {
+        cmd.arg("-nkvo");
+    }
+
+    // The KV cache is what a large context actually costs; q8_0 keys shrink it at
+    // imperceptible quality cost, which buys a rung or two on the ladder above.
+    // Same trade as `OLLAMA_KV_CACHE_TYPE=q8_0` in `tuning.rs`. Values are left at
+    // f16 on purpose: llama.cpp refuses a quantized V cache unless flash attention
+    // is actually active, and `-fa auto` may resolve to off on some backends.
+    if supports_kv_cache_type(server_bin) {
+        cmd.arg("--cache-type-k").arg("q8_0");
+    }
 
     if flash_attn_takes_value(server_bin) {
         cmd.arg("-fa").arg("auto");
@@ -413,72 +490,112 @@ pub async fn ensure_server(model_path: &Path, app_dir: &Path) -> Result<(), anyh
         let _ = std::fs::remove_file(zone_file);
     }
 
-    // Try starting with GPU offload (-ngl 99) first, then fallback to CPU (-ngl 0) if GPU fails
-    let ngl_options = [99, 0];
+    // Walk `CTX_LADDER` from the top and keep the largest context this machine can actually
+    // hold — whether a KV cache fits isn't knowable in advance, it surfaces as an allocation
+    // failure at load time. Context is the outer loop and offload the inner one, so each size
+    // is offered to the GPU before being given up on.
+    //
+    // `WeightsOnly` is why context can be maximised without trading away acceleration: its
+    // VRAM need is context-independent, so if it fails, plain `Full` fails at every size too,
+    // and reaching `Cpu` genuinely means the weights don't fit on the card at all.
+    let mut offload_options = vec![Offload::Full];
+    if supports_no_kv_offload(&server_bin) {
+        offload_options.push(Offload::WeightsOnly);
+    }
+    offload_options.push(Offload::Cpu);
+
     let mut last_error = String::new();
 
-    for &ngl in &ngl_options {
-        let mut child = match spawn_llama_server(&server_bin, model_path, ngl) {
-            Ok(c) => c,
-            Err(e) => {
-                last_error = e.to_string();
-                continue;
+    // Each attempt gets its own load timeout, so without an overall bound a run of failures
+    // could stack into many minutes behind a spinner.
+    let search_start = std::time::Instant::now();
+    let search_budget = Duration::from_secs(300);
+
+    'search: for &ctx in &CTX_LADDER {
+        for &offload in &offload_options {
+            let remaining = search_budget.saturating_sub(search_start.elapsed());
+            if remaining.is_zero() {
+                break 'search;
             }
-        };
 
-        // Wait for server health endpoint to respond
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()?;
-
-        let start = std::time::Instant::now();
-        let timeout = Duration::from_secs(120); // 120s timeout for cold model loading
-        let mut process_crashed = false;
-
-        while start.elapsed() < timeout {
-            tokio::time::sleep(Duration::from_millis(500)).await;
-
-            // Check if child process crashed
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    process_crashed = true;
-                    let mut stderr_output = String::new();
-                    if let Some(mut stderr_pipe) = child.stderr.take() {
-                        use std::io::Read;
-                        let _ = stderr_pipe.read_to_string(&mut stderr_output);
-                    }
-                    let err_msg = stderr_output.trim();
-                    last_error = if err_msg.is_empty() {
-                        format!("llama-server exited with status {status}")
-                    } else {
-                        format!("llama-server exited with status {status}: {err_msg}")
-                    };
-                    break;
-                }
+            let mut child = match spawn_llama_server(&server_bin, model_path, offload, ctx) {
+                Ok(c) => c,
                 Err(e) => {
-                    process_crashed = true;
-                    last_error = format!("Error checking llama-server: {e}");
-                    break;
+                    // Spawn failure is about the binary, not this rung — every other
+                    // combination would fail the same way.
+                    last_error = e.to_string();
+                    break 'search;
                 }
-                Ok(None) => {} // Still running/loading
+            };
+
+            // Wait for server health endpoint to respond
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()?;
+
+            let start = std::time::Instant::now();
+            // 120s for cold model loading, trimmed so one attempt can't outlive the search.
+            let timeout = remaining.min(Duration::from_secs(120));
+            let mut process_crashed = false;
+
+            while start.elapsed() < timeout {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+
+                // Check if child process crashed
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        process_crashed = true;
+                        let mut stderr_output = String::new();
+                        if let Some(mut stderr_pipe) = child.stderr.take() {
+                            use std::io::Read;
+                            let _ = stderr_pipe.read_to_string(&mut stderr_output);
+                        }
+                        let err_msg = stderr_output.trim();
+                        last_error = if err_msg.is_empty() {
+                            format!("llama-server exited with status {status}")
+                        } else {
+                            format!("llama-server exited with status {status}: {err_msg}")
+                        };
+                        break;
+                    }
+                    Err(e) => {
+                        process_crashed = true;
+                        last_error = format!("Error checking llama-server: {e}");
+                        break;
+                    }
+                    Ok(None) => {} // Still running/loading
+                }
+
+                if let Ok(resp) = client.get(format!("{SERVER_URL}/health")).send().await {
+                    if resp.status().is_success() {
+                        log::info!(
+                            "llama-server ready: ctx {ctx} tokens ({}), model {}",
+                            offload.label(),
+                            model_path.display()
+                        );
+                        let mut lock = ACTIVE_SERVER.lock().unwrap();
+                        *lock = Some(ActiveLlamaServer {
+                            model_path: model_path.to_path_buf(),
+                            child,
+                        });
+                        return Ok(());
+                    }
+                }
             }
 
-            if let Ok(resp) = client.get(format!("{SERVER_URL}/health")).send().await {
-                if resp.status().is_success() {
-                    let mut lock = ACTIVE_SERVER.lock().unwrap();
-                    *lock = Some(ActiveLlamaServer {
-                        model_path: model_path.to_path_buf(),
-                        child,
-                    });
-                    return Ok(());
-                }
+            if !process_crashed {
+                let _ = child.kill();
+                let _ = child.wait();
+                last_error = "`llama-server` timed out while loading model into memory".to_string();
             }
-        }
 
-        if !process_crashed {
-            let _ = child.kill();
-            let _ = child.wait();
-            last_error = "`llama-server` timed out while loading model into memory".to_string();
+            log::warn!(
+                "llama-server failed at ctx {ctx} ({}): {last_error}",
+                offload.label()
+            );
+            // Give the OS a moment to release the listening port before the next
+            // attempt binds it, so a retry can't be misread as a load failure.
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
 
