@@ -1,15 +1,28 @@
-# HELIX Desktop (v0.6.8)
+# HELIX Desktop (v0.6.10)
 
 Local-first, 100% private desktop AI chat shell built with Tauri 2, Rust, Vue 3, and native `llama.cpp` engine.
 
 HELIX provides a standalone, private desktop chat environment. Run local GGUF models directly on your hardware without needing external cloud services, API keys, or third-party background daemons.
 
 > [!NOTE]
-> **Release Notice**: HELIX Desktop v0.6.8 is the latest stable release. If you encounter any bugs or feature requests, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/Helix/issues).
+> **Release Notice**: HELIX Desktop v0.6.10 is the latest stable release. If you encounter any bugs or feature requests, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/Helix/issues).
 
 ---
 
-## ⚡ What's New in v0.6.8
+## ⚡ What's New in v0.6.10
+
+- **📥 Non-Destructive `.gguf` Import**:
+  - Importing a local `.gguf` now **copies** it into `~/.HELIX/models/` and always leaves your original file exactly where it was.
+  - A failed or truncated copy is rolled back instead of leaving a partial file behind, and a same-named different model lands as `name-2.gguf` rather than overwriting.
+  - `.GGUF` is accepted alongside `.gguf`.
+
+- **🔗 Ollama Is Now Optional, Not Required**:
+  - Ollama registration is best-effort: if the CLI is missing or the daemon is asleep, the import still succeeds and reports why registration was skipped. The model runs on HELIX's built-in `llama-server` engine either way.
+  - Temporary `Modelfile`s are written outside the models folder and cleaned up even on failure; stray ones left by earlier versions are swept on the next import, and deleting a model removes its sibling `.Modelfile`.
+
+- **🔌 MCP Plugin Install & Repair**:
+  - Nested `.mcp.json` files are detected when installing a plugin, so servers that ship their config in a subdirectory no longer come up **Offline**.
+  - `${CLAUDE_PLUGIN_ROOT}` is expanded in imported `.mcp.json` configs, and already-installed plugins are auto-repaired on load.
 
 - **🛡️ Process Lifecycle & OS Error 32 Resolution**:
   - Bound `llama-server.exe` to Tauri `RunEvent::Exit` lifecycle hooks so background engine processes exit cleanly when closing HELIX.
@@ -46,10 +59,10 @@ HELIX provides a standalone, private desktop chat environment. Run local GGUF mo
 
 ## 📦 Latest Stable Release
 
-- **Current Stable:** [v0.6.8](https://github.com/tjcrims0nx/Helix/releases/tag/v0.6.8)
-- **Windows Installer (NSIS):** `HELIX-Setup.exe`
-- **Windows Installer (MSI):** `HELIX_0.6.8_x64_en-US.msi`
-- **Checksums:** `SHA256SUMS.txt`
+- **Current Stable:** [v0.6.10](https://github.com/tjcrims0nx/Helix/releases/tag/v0.6.10)
+- **Windows Installer (NSIS):** [`HELIX-Setup.exe`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.10/HELIX-Setup.exe)
+- **Windows Installer (MSI):** [`HELIX_0.6.10_x64_en-US.msi`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.10/HELIX_0.6.10_x64_en-US.msi)
+- **Checksums:** [`SHA256SUMS.txt`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.10/SHA256SUMS.txt)
 
 ---
 
@@ -57,7 +70,7 @@ HELIX provides a standalone, private desktop chat environment. Run local GGUF mo
 
 ### Download & Install
 
-Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.6.8_x64_en-US.msi`) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/Helix/releases/tag/v0.6.8).
+Download the latest installer ([`HELIX-Setup.exe`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.10/HELIX-Setup.exe) or [`HELIX_0.6.10_x64_en-US.msi`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.10/HELIX_0.6.10_x64_en-US.msi)) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/Helix/releases/latest).
 
 ---
 
@@ -85,7 +98,7 @@ Download the latest installer (`HELIX-Setup.exe` or `HELIX_0.6.8_x64_en-US.msi`)
 ### 📦 GGUF Model Management
 - Browse & search HuggingFace open-source GGUF models.
 - Parallel multi-threaded chunked downloads with resume support.
-- One-click import for custom local `.gguf` files.
+- One-click import for custom local `.gguf` files — non-destructive, your original file stays where it is.
 - Active model switching and real-time disk usage analytics.
 
 ### 🔌 Model Context Protocol (MCP)
