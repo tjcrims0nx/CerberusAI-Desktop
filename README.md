@@ -1,15 +1,35 @@
-# HELIX Desktop (v0.6.10)
+# HELIX Desktop (v0.6.11)
 
 Local-first, 100% private desktop AI chat shell built with Tauri 2, Rust, Vue 3, and native `llama.cpp` engine.
 
 HELIX provides a standalone, private desktop chat environment. Run local GGUF models directly on your hardware without needing external cloud services, API keys, or third-party background daemons.
 
 > [!NOTE]
-> **Release Notice**: HELIX Desktop v0.6.10 is the latest stable release. If you encounter any bugs or feature requests, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/Helix/issues).
+> **Release Notice**: HELIX Desktop v0.6.11 is the latest stable release. If you encounter any bugs or feature requests, please report them on the [GitHub Issues Page](https://github.com/tjcrims0nx/Helix/issues).
 
 ---
 
-## ⚡ What's New in v0.6.10
+## ⚡ What's New in v0.6.11
+
+- **🧠 Very Large Context Windows**:
+  - The engine no longer runs at a fixed 8192 tokens, so attaching a sizeable file stops failing with *"request exceeds the available context size"*. It negotiates the largest window your machine can actually serve — 131072 → 65536 → 32768 → 8192 — trying full GPU offload, then weights-on-GPU with the KV cache in system RAM, then CPU.
+  - On a 4 GB GPU that reaches **131072 tokens with every layer still on the GPU**. The K cache is quantized to `q8_0` to halve its size, and `llama-server` flags are probed from `--help` rather than assumed, so older and newer engine builds both work.
+  - The Ollama path, which cannot negotiate, was raised from 2048 to 32768.
+
+- **⬇️ In-App Update Now Installs**:
+  - The updater downloaded the installer and then opened a browser instead of installing. It now launches the installer elevated through UAC, which is what a `perMachine` NSIS bundle requires.
+  - It also picks the right asset (the NSIS installer, whatever the upload order), deletes a partial download instead of launching it, catches a truncated transfer, and stops the engine before exiting so nothing holds a lock on `~/.HELIX/bin`.
+
+- **📎 File Attachments Shown as Pills**:
+  - An attached text file no longer dumps its entire body into the chat bubble. It appears as a pill with its name, line count and size; click to unfold the contents. The model still receives the full text.
+  - A message with only files attached and no typed text can now be sent, and titles the chat from the file names.
+
+- **🔄 Model Manager Refresh**:
+  - A refresh button in the manager header re-scans for models without reopening the window, and re-runs the HuggingFace query when that tab is active.
+
+- **🔌 MCP Plugin Loading Fixes**:
+  - Stdio servers are launched by a plain absolute path, fixing `EISDIR: illegal operation on a directory, lstat 'C:'` — a Windows extended-length path that Node could not load, which took the HELIX Skills server offline.
+  - Plugin installs now initialise git submodules, so a plugin whose skills live in one (such as `ai_maestro`) installs with its skills instead of an empty directory.
 
 - **📥 Non-Destructive `.gguf` Import**:
   - Importing a local `.gguf` now **copies** it into `~/.HELIX/models/` and always leaves your original file exactly where it was.
@@ -59,10 +79,10 @@ HELIX provides a standalone, private desktop chat environment. Run local GGUF mo
 
 ## 📦 Latest Stable Release
 
-- **Current Stable:** [v0.6.10](https://github.com/tjcrims0nx/Helix/releases/tag/v0.6.10)
-- **Windows Installer (NSIS):** [`HELIX-Setup.exe`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.10/HELIX-Setup.exe)
-- **Windows Installer (MSI):** [`HELIX_0.6.10_x64_en-US.msi`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.10/HELIX_0.6.10_x64_en-US.msi)
-- **Checksums:** [`SHA256SUMS.txt`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.10/SHA256SUMS.txt)
+- **Current Stable:** [v0.6.11](https://github.com/tjcrims0nx/Helix/releases/tag/v0.6.11)
+- **Windows Installer (NSIS):** [`HELIX-Setup.exe`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.11/HELIX-Setup.exe)
+- **Windows Installer (MSI):** [`HELIX_0.6.11_x64_en-US.msi`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.11/HELIX_0.6.11_x64_en-US.msi)
+- **Checksums:** [`SHA256SUMS.txt`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.11/SHA256SUMS.txt)
 
 ---
 
@@ -70,7 +90,7 @@ HELIX provides a standalone, private desktop chat environment. Run local GGUF mo
 
 ### Download & Install
 
-Download the latest installer ([`HELIX-Setup.exe`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.10/HELIX-Setup.exe) or [`HELIX_0.6.10_x64_en-US.msi`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.10/HELIX_0.6.10_x64_en-US.msi)) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/Helix/releases/latest).
+Download the latest installer ([`HELIX-Setup.exe`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.11/HELIX-Setup.exe) or [`HELIX_0.6.11_x64_en-US.msi`](https://github.com/tjcrims0nx/Helix/releases/download/v0.6.11/HELIX_0.6.11_x64_en-US.msi)) directly from the [GitHub Releases page](https://github.com/tjcrims0nx/Helix/releases/latest).
 
 ---
 
